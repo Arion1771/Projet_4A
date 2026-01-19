@@ -16,13 +16,15 @@ Conception et implémentation d'un système de communication LoRa permettant de 
 - Chaque noeud doit pouvoir communiquer de manière bidirectionnelle (chaque noeud doit pouvoir communiquer avec son prédecesseur et son successeur pour transmettre des messages dans les deux sens)
 - Les messages du système doivent être de type : SMS, d'alerte ou de communication réseau (état du réseau ou insertion d'un nouveau noeud dans la chaine)
 - Détection de limite de portée entre deux noeuds consecutifs (le systeme doit detecter l'approche de la limite de portée du dernier noeuds posé, prevenant l'utilisateur qu'il faut ajouter un nouveau noeud à la chaine)
-- L'utilisateur doit etre prévenu lorsque la limite de portée est atteinte
+- L'utilisateur doit etre prévenu lorsque la limite de portée est atteinte (son et vibration)
 - Les messages d'alertes doivent etre traités en priorité sur le réseau et transmis à tous les noeuds de la chaine ainsi qu'à tous les utilisateurs connéctés (Les messages d'alertes doivent declencher une LED rouge sur chaque noeud et doivent etre signalés aux utilisateurs par un son et une vibration)
-- Deploiment incrémental du réseau de noeuds (le systeme doit etre deployé au fil de l'avancée en souterrain, permettant à tout moment l'ajout d'un nouveau noeud relais. Il doit s'inserer automatiquement à l'allumage et confirmer cela par l'allumage d'une LED)
-- Indication de l'état de chaque noeud à travers une LED (Eteinte : Hors tension / Bleu : Allumé mais non connécté / Verte : connécté au réseau / Rouge : message d'alerte actif)
+- Deploiment incrémental du réseau de noeuds (le systeme doit etre deployé au fil de l'avancée en souterrain, permettant à tout moment l'ajout d'un nouveau noeud relais. Il doit s'inserer automatiquement à l'allumage et confirmer cela par l'allumage d'une LED d'une couleur particulière (verte))
+- Lors de l'allumage du module, il doit se connecter au réseau puis verifier le bon état de la communication (si cette dernière est possible mais aussi en s'annoncant au réseau pour en mettre l'état a jour)
+- Indication de l'état de chaque noeud à travers une LED (Eteinte : Hors tension / Orange : Allumé mais non connécté / Verte : connécté au réseau / Rouge : message d'alerte actif)
 - Garantir une interface utilisateur par application smartphone (l'application doit permettre l'envoi et la reception de messages textuels ou d'alertes et l'état de la connection au réseau (perdu, connécté ou limite atteinte))
 - Garantir une livraison fiable des messages (avec retransmission en cas d'echec (mécanisme d'ACK))
 - Connaissance de l'état du réseau (Les noeuds doivent échanger des messages permettant de connaitre l'état du réseau à tout moment (continuité de la chaine, nouvelle insertion de noeud ou modification du reseau))
+- Vérification de l'état de la batterie des modules et annonce si celle ci est trop basse a l'utilisateur (message simple sur l'application) (si impossibilité de réaliser le système en physique, possibilité d'ajouter seulement la verification dans l'API)
 
 ### Exigences Non-Fonctionnelles
 - La fiabilité doit etre privilégiée (par rapport au débit et à la latence)
@@ -31,6 +33,16 @@ Conception et implémentation d'un système de communication LoRa permettant de 
 - La consommation énergitique doit être maitrisée (les noeuds doivent fonctionner sur batterie rechargeable et les communications doivent utiliser le minimum d'énergie)
 - Le système doit etre simple et rapide d'usage (UI minimale et application simple d'utilisation permettant la communication rapide)
 
+---
+## Notes Entretien
+module rp2040 basse consommation pas mal
+connexion au reseau à l'allumage
+quand s'allume lance algo et verifie bon etat reseau (communication possible+ annonce de mise a jour réseau)
+verifier état batterie des module du réseau (possibilité de prevenir si trop bas) ( si trop compliqué possibilité d'ajouter dans l'API du module sans le faire en physique)
+Led non native a ajouter ( présence GPIO possible) // à voir
+eviter redondance de message
+exagerer sur robustesse !!!!!!!
+app telephone tres simple ( sms )
 ---
 ## Etape 1
 
