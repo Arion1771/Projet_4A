@@ -4,17 +4,17 @@
 
 ## Description
 
-Conception et implémentation d'un système de communication LoRa permettant de maintenir une transmission avec l'exterieur lors de déplacement en milieu souterrains (spéléologie). Cela doit être réalisé a l'aide d'un réseau modifiable de noeuds relais.
+Conception et implémentation d'un système de communication LoRa permettant de maintenir une transmission avec l'exterieur lors de déplacement en milieu souterrain (spéléologie). Cela doit être réalisé à l'aide d'un réseau modifiable de noeuds relais.
 
 ---
 
 ## Exigences
 
-### Exigence Fonctionnelles
+### Exigences Fonctionnelles
 - Transmission fiable entre deux noeuds consecutifs sans perte d'informations (Le systeme doit permettre l'échange de messages entre le noeud de départ et le noeud d'arrivée via une chaine de noeuds intermédiaires)
 - Architecture linéaire du réseau
 - Chaque noeud doit pouvoir communiquer de manière bidirectionnelle (chaque noeud doit pouvoir communiquer avec son prédecesseur et son successeur pour transmettre des messages dans les deux sens)
-- Les messages du système doivent etre de type : SMS, d'alerte ou de communication réseau (état du réseau ou insertion d'un nouveau noeud dans la chaine)
+- Les messages du système doivent être de type : SMS, d'alerte ou de communication réseau (état du réseau ou insertion d'un nouveau noeud dans la chaine)
 - Détection de limite de portée entre deux noeuds consecutifs (le systeme doit detecter l'approche de la limite de portée du dernier noeuds posé, prevenant l'utilisateur qu'il faut ajouter un nouveau noeud à la chaine)
 - L'utilisateur doit etre prévenu lorsque la limite de portée est atteinte
 - Les messages d'alertes doivent etre traités en priorité sur le réseau et transmis à tous les noeuds de la chaine ainsi qu'à tous les utilisateurs connéctés (Les messages d'alertes doivent declencher une LED rouge sur chaque noeud et doivent etre signalés aux utilisateurs par un son et une vibration)
@@ -24,7 +24,7 @@ Conception et implémentation d'un système de communication LoRa permettant de 
 - Garantir une livraison fiable des messages (avec retransmission en cas d'echec (mécanisme d'ACK))
 - Connaissance de l'état du réseau (Les noeuds doivent échanger des messages permettant de connaitre l'état du réseau à tout moment (continuité de la chaine, nouvelle insertion de noeud ou modification du reseau))
 
-### Exigence Non-Fonctionnelles
+### Exigences Non-Fonctionnelles
 - La fiabilité doit etre privilégiée (par rapport au débit et à la latence)
 - Les messages d'alertes doivent toujours être transmis en priorité
 - Le système doit pouvoir fonctionner en milieu souterrain (propagation radio fortement attenuée et imprévisible et environnement evolutif (humide et instable))
@@ -32,4 +32,16 @@ Conception et implémentation d'un système de communication LoRa permettant de 
 - Le système doit etre simple et rapide d'usage (UI minimale et application simple d'utilisation permettant la communication rapide)
 
 ---
+## Etape 1
+
+---
+## Etape 1
+
+---
+## ...
+
+---
+## Etape n
+
+
 
