@@ -1,0 +1,3 @@
+# Keep generated makefiles and build recipes in LF to avoid Windows autocrlf warnings
+*.mk text eol=lf
+makefile text eol=lf
