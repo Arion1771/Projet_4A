@@ -3,6 +3,7 @@
 #include "subghz.h"
 #include "timer.h"
 #include <string.h>
+#include <stdio.h>
 
 #define RF_FREQUENCY_HZ        868000000U
 #define TX_OUTPUT_POWER_DBM    14
@@ -14,8 +15,29 @@
 #define RX_TIMEOUT_MS          3000U
 #define TX_TIMEOUT_MS          3000U
 #define APP_TX_PERIOD_MS       5000U
+#define FRAME_VERSION          1U
+#define MSG_TEXT               1U
+#define NODE_ID_E5             0xE501U
+#define NODE_ID_WYRES          0x0201U
+#define MAX_FRAME_PAYLOAD      64U
+
+typedef struct
+{
+	uint8_t version;
+	uint8_t type;
+	uint16_t src_id;
+	uint16_t dst_id;
+	uint16_t seq;
+	uint8_t ttl;
+	uint8_t flags;
+	uint8_t payload_len;
+	uint8_t payload[MAX_FRAME_PAYLOAD];
+} AppFrame_t;
 
 static UART_HandleTypeDef huart1;
+static UART_HandleTypeDef huart2;
+static uint8_t uart1_ready = 0U;
+static uint8_t uart2_ready = 0U;
 
 static RadioEvents_t radio_events;
 
@@ -28,6 +50,7 @@ static uint8_t rx_buffer[255];
 static uint16_t rx_size = 0;
 static int16_t rx_rssi = 0;
 static int8_t rx_snr = 0;
+static uint16_t tx_seq = 1U;
 
 static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -42,11 +65,17 @@ static void OnRxError(void);
 
 static void Uart_Log(const char *msg);
 static void Uart_LogHex(const uint8_t *data, uint16_t size);
+static void Uart_LogText(const uint8_t *data, uint16_t size);
+static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
+static uint8_t BuildTextFrame(AppFrame_t *frame, const uint8_t *payload, uint8_t size);
 
 int main(void)
 {
 	uint32_t last_tx_tick = 0;
-	const uint8_t tx_payload[] = "HELLO";
+	uint32_t last_alive_tick = 0;
+	const uint8_t tx_payload[] = "E5->WYRES";
+	AppFrame_t tx_frame;
+	uint8_t tx_len = 0;
 
 	HAL_Init();
 	SystemClock_Config();
@@ -54,6 +83,7 @@ int main(void)
 	MX_GPIO_Init();
 	MX_USART1_UART_Init();
 	MX_SUBGHZ_Init();
+	Uart_Log("BOOT LORAPROJET\r\n");
 
 	Radio_Init();
 	Radio.Rx(0);
@@ -64,10 +94,31 @@ int main(void)
 
 		if (radio_rx_done != 0U)
 		{
+			AppFrame_t frame;
 			radio_rx_done = 0U;
-			Uart_Log("RX: ");
-			Uart_LogHex(rx_buffer, rx_size);
-			Uart_Log("\r\n");
+
+			if ((rx_size >= 11U) && (rx_buffer[0] == FRAME_VERSION))
+			{
+				memset(&frame, 0, sizeof(frame));
+				if (rx_size > sizeof(frame))
+				{
+					rx_size = sizeof(frame);
+				}
+				memcpy(&frame, rx_buffer, rx_size);
+
+				Uart_Log("RX FRAME TEXT: ");
+				Uart_LogText(frame.payload, frame.payload_len);
+				Uart_Log("\r\n");
+			}
+			else
+			{
+				Uart_Log("RX RAW: ");
+				Uart_LogText(rx_buffer, rx_size);
+				Uart_Log(" | HEX: ");
+				Uart_LogHex(rx_buffer, rx_size);
+				Uart_Log("\r\n");
+			}
+
 			HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 			Radio.Rx(0);
 		}
@@ -95,11 +146,23 @@ int main(void)
 
 		if ((HAL_GetTick() - last_tx_tick) >= APP_TX_PERIOD_MS)
 		{
-			if (Radio.GetStatus() == RF_IDLE)
+			RadioState_t state = Radio.GetStatus();
+			if (state != RF_TX_RUNNING)
 			{
+				if (state == RF_RX_RUNNING)
+				{
+					Radio.Standby();
+				}
 				last_tx_tick = HAL_GetTick();
-				Radio.Send((uint8_t *)tx_payload, (uint8_t)strlen((const char *)tx_payload));
+				tx_len = BuildTextFrame(&tx_frame, tx_payload, (uint8_t)strlen((const char *)tx_payload));
+				Radio.Send((uint8_t *)&tx_frame, tx_len);
 			}
+		}
+
+		if ((HAL_GetTick() - last_alive_tick) >= 2000U)
+		{
+			last_alive_tick = HAL_GetTick();
+			Uart_Log("ALIVE\r\n");
 		}
 	}
 }
@@ -186,7 +249,7 @@ static void Uart_Log(const char *msg)
 		return;
 	}
 
-	HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)strlen(msg), HAL_MAX_DELAY);
+	Uart_TransmitAll((const uint8_t *)msg, (uint16_t)strlen(msg));
 }
 
 static void Uart_LogHex(const uint8_t *data, uint16_t size)
@@ -200,8 +263,66 @@ static void Uart_LogHex(const uint8_t *data, uint16_t size)
 	{
 		out[0] = hex[(data[i] >> 4) & 0x0F];
 		out[1] = hex[data[i] & 0x0F];
-		HAL_UART_Transmit(&huart1, (uint8_t *)out, 2, HAL_MAX_DELAY);
+		Uart_TransmitAll((const uint8_t *)out, 2U);
 	}
+}
+
+static void Uart_LogText(const uint8_t *data, uint16_t size)
+{
+	uint16_t i;
+	uint8_t c;
+
+	for (i = 0; i < size; i++)
+	{
+		c = data[i];
+		if ((c < 32U) || (c > 126U))
+		{
+			c = '.';
+		}
+		Uart_TransmitAll(&c, 1U);
+	}
+}
+
+static void Uart_TransmitAll(const uint8_t *buf, uint16_t len)
+{
+	if ((buf == NULL) || (len == 0U))
+	{
+		return;
+	}
+
+	if (uart1_ready != 0U)
+	{
+		(void)HAL_UART_Transmit(&huart1, (uint8_t *)buf, len, 50U);
+	}
+
+	if (uart2_ready != 0U)
+	{
+		(void)HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 50U);
+	}
+}
+
+static uint8_t BuildTextFrame(AppFrame_t *frame, const uint8_t *payload, uint8_t size)
+{
+	if (size > MAX_FRAME_PAYLOAD)
+	{
+		size = MAX_FRAME_PAYLOAD;
+	}
+
+	memset(frame, 0, sizeof(*frame));
+	frame->version = FRAME_VERSION;
+	frame->type = MSG_TEXT;
+	frame->src_id = NODE_ID_E5;
+	frame->dst_id = NODE_ID_WYRES;
+	frame->seq = tx_seq++;
+	frame->ttl = 8U;
+	frame->flags = 0U;
+	frame->payload_len = size;
+	if (size > 0U)
+	{
+		memcpy(frame->payload, payload, size);
+	}
+
+	return (uint8_t)(11U + size);
 }
 
 static void MX_GPIO_Init(void)
@@ -223,6 +344,33 @@ static void MX_USART1_UART_Init(void)
 {
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+	/* USART2 on PA2/PA3 (NUCLEO ST-LINK VCP common path). */
+	__HAL_RCC_USART2_CLK_ENABLE();
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+
+	GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
+	GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+	GPIO_InitStruct.Pull = GPIO_PULLUP;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+	GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+	huart2.Instance = USART2;
+	huart2.Init.BaudRate = 115200;
+	huart2.Init.WordLength = UART_WORDLENGTH_8B;
+	huart2.Init.StopBits = UART_STOPBITS_1;
+	huart2.Init.Parity = UART_PARITY_NONE;
+	huart2.Init.Mode = UART_MODE_TX_RX;
+	huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+	huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+	huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+	huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+	if (HAL_UART_Init(&huart2) == HAL_OK)
+	{
+		uart2_ready = 1U;
+	}
+
+	/* USART1 on PB6/PB7 (alternative wiring path). */
 	__HAL_RCC_USART1_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -243,7 +391,12 @@ static void MX_USART1_UART_Init(void)
 	huart1.Init.OverSampling = UART_OVERSAMPLING_16;
 	huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
 	huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-	if (HAL_UART_Init(&huart1) != HAL_OK)
+	if (HAL_UART_Init(&huart1) == HAL_OK)
+	{
+		uart1_ready = 1U;
+	}
+
+	if ((uart1_ready == 0U) && (uart2_ready == 0U))
 	{
 		Error_Handler();
 	}
