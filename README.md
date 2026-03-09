@@ -48,6 +48,7 @@ Le projet s'étend du 05/01/2026 et finit le 30/03/2026
 
 
 ## Notes Entretien
+### Premier Entretien
 - module rp2040 basse consommation pas mal
 - connexion au reseau à l'allumage
 - quand s'allume lance algo et verifie bon etat reseau (communication possible+ annonce de mise a jour réseau)
@@ -60,6 +61,7 @@ Le projet s'étend du 05/01/2026 et finit le 30/03/2026
 ## Diagramme UML
 
 ### Diagramme Use-Case
+![Diagramme d'Utilisation](./docs/usecase_diag.png)
 
 ### Diagramme de Séquence de l'envoie d'un message
 ![Diagramme de Séquence](./docs/sequence_diag.png)
@@ -69,6 +71,8 @@ Le projet s'étend du 05/01/2026 et finit le 30/03/2026
 Pre-requis:
 - STM32CubeIDE installé (version recente)
 - Toolchain `GNU Tools for STM32` disponible dans l'IDE
+
+### Lora E5 Development Kit
 
 Ouverture du projet:
 1. Cloner le depot.
