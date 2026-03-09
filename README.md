@@ -62,53 +62,7 @@ Le projet s'étend du 05/01/2026 et finit le 30/03/2026
 ### Diagramme Use-Case
 
 ### Diagramme de Séquence de l'envoie d'un message
-```plantuml
-@startuml
-skinparam style strictuml
-skinparam sequenceMessageAlign center
-
-participant "Nœud 1 : LoRa-E5\n(Entrée Cavité)" as E5
-participant "Nœud i ( avec i ∈ [2;N-1]) : Wyres V2\n(Relais)" as Wyres
-participant "Nœud N : T-Beam\n(Extrémité)" as TBeam
-actor "Smartphone\n(App Mobile)" as Mobile
-
-== Initialisation du Message ==
-
-E5 -> E5 : Détection message (UART/Bouton)
-E5 -> E5 : Set_Node_LED(NODE_INSERTED)
-
-E5 -> Wyres : Transmission LoRa (Data)
-activate Wyres
-Wyres -> Wyres : Vérification intégrité
-Wyres --> E5 : ACK (Confirmation)
-deactivate E5
-
-== Relais Milieu de Cavité ==
-
-Wyres -> TBeam : Relais LoRa (Data)
-activate TBeam
-TBeam --> Wyres : ACK
-deactivate Wyres
-
-== Sortie & Affichage ==
-
-TBeam -> TBeam : Extraction des données
-TBeam -> Mobile : Envoi via Bluetooth / UART
-activate Mobile
-Mobile -> Mobile : Affichage Notification SMS
-deactivate Mobile
-
-== Cas d'Alerte ==
-
-Wyres -> Wyres : Mesure RSSI/SNR
-group if [Portée Limite détectée]
-    Wyres -> Wyres : Set_Node_LED(NODE_ALERT)
-    Wyres -> TBeam : Alerte Prioritaire
-    TBeam -> Mobile : " Nœud i en limite de portée"
-end
-
-@enduml
-```
+![Diagramme de Séquence](./docs/sequence_diag.png)
 
 ## Build Apres Clone
 
