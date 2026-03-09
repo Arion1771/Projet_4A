@@ -4,7 +4,12 @@
 
 ## Description
 
-Conception et implémentation d'un système de communication LoRa permettant de maintenir une transmission avec l'exterieur lors de déplacement en milieu souterrain (spéléologie). Cela doit être réalisé à l'aide d'un réseau modifiable de noeuds relais.
+Ce projet consiste a concevoir et implémenter d'un système de communication LoRa permettant de maintenir une transmission avec l'exterieur lors de déplacement en milieu souterrain (spéléologie). Cela doit être réalisé à l'aide d'un réseau modifiable de noeuds relais.
+Il doit etre réalisé à l'aide 4 noeuds LoRa, deux ordinateur pour la programmation et un téléphone portable android pour les tests
+
+
+Le projet s'étend du 05/01/2026 et finit le 30/03/2026
+
 
 ---
 
@@ -35,19 +40,24 @@ Conception et implémentation d'un système de communication LoRa permettant de 
 
 ---
 ## Notes Entretien
-module rp2040 basse consommation pas mal
-connexion au reseau à l'allumage
-quand s'allume lance algo et verifie bon etat reseau (communication possible+ annonce de mise a jour réseau)
-verifier état batterie des module du réseau (possibilité de prevenir si trop bas) ( si trop compliqué possibilité d'ajouter dans l'API du module sans le faire en physique)
-Led non native a ajouter ( présence GPIO possible) // à voir
-eviter redondance de message
-exagerer sur robustesse !!!!!!!
-app telephone tres simple ( sms )
+- module rp2040 basse consommation pas mal
+- connexion au reseau à l'allumage
+- quand s'allume lance algo et verifie bon etat reseau (communication possible+ annonce de mise a jour réseau)
+- verifier état batterie des module du réseau (possibilité de prevenir si trop bas) ( si trop compliqué possibilité d'ajouter dans l'API du module sans le faire en physique)
+- Led non native a ajouter ( présence GPIO possible) // à voir
+- eviter redondance de message
+- exagerer sur robustesse !!!!!!!
+- app telephone tres simple ( sms )
 ---
-## Etape 1
+## Diagrame UML
+
+### Acteurs 
+-
+
+## Etape 0
 
 ---
-## Etape 1
+## Etape .
 
 ---
 ## ...
