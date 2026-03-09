@@ -57,12 +57,12 @@ Le projet s'étend du 05/01/2026 et finit le 30/03/2026
 - exagerer sur robustesse !!!!!!!
 - app telephone tres simple ( sms )
 ---
-## Diagrame UML
+## Diagramme UML
 
-### Diagrame Use-Case
+### Diagramme Use-Case
 
-### Diagrame de Séquence
-```plantUML
+### Diagramme de Séquence de l'envoie d'un message
+```plantuml
 @startuml
 skinparam style strictuml
 skinparam sequenceMessageAlign center
