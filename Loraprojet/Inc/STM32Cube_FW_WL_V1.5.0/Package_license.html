@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Licensed Materials Terms for STM32CubeWL</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="_htmresc/mini-st_2020.css" />
+  <link rel="icon" type="image/x-icon" href="_htmresc/favicon.png" />
+</head>
+<body>
+<div class="row">
+<div class="col-sm-12 col-lg-3">
+<center>
+<h1 id="these-are-full-license-terms-for">These are full license terms
+for</h1>
+<h1 id="stm32cubewl"><mark>STM32CubeWL</mark></h1>
+<p>Copyright © 2021 STMicroelectronics</p>
+<p>All rights reserved</p>
+<a href="https://www.st.com" class="logo"><img
+src="_htmresc/st_logo_2020.png" alt="ST logo" /></a>
+</center>
+</div>
+<section id="overview" class="col-sm-12 col-lg-9">
+<h2><mark><strong>OVERVIEW</strong></mark></h2>
+<div>
+<p>This Software Bill Of Material (SBOM) lists the software components
+of this software package, including the copyright owner and license
+terms for each component.</p>
+<p>The full text of these licenses are below the SBOM.</p>
+<p><strong>SOFTWARE BILL OF MATERIALS</strong></p>
+<table>
+<colgroup>
+<col style="width: 39%" />
+<col style="width: 30%" />
+<col style="width: 30%" />
+</colgroup>
+<thead>
+<tr>
+<th>Component</th>
+<th>Copyright</th>
+<th>License</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CMSIS</td>
+<td>ARM Limited</td>
+<td><a
+href="https://opensource.org/licenses/Apache-2.0">Apache-2.0</a></td>
+</tr>
+<tr>
+<td>CMSIS Device</td>
+<td>ARM Limited - STMicroelectronics</td>
+<td><a
+href="https://opensource.org/licenses/Apache-2.0">Apache-2.0</a></td>
+</tr>
+<tr>
+<td>STM32WL HAL</td>
+<td>STMicroelectronics</td>
+<td><a
+href="https://opensource.org/licenses/BSD-3-Clause">BSD-3-Clause</a></td>
+</tr>
+<tr>
+<td>BSP STM32WLxx_Nucleo</td>
+<td>STMicroelectronics</td>
+<td><a
+href="https://opensource.org/licenses/BSD-3-Clause">BSD-3-Clause</a></td>
+</tr>
+<tr>
+<td>BSP B-WL5M-SUBG</td>
+<td>STMicroelectronics</td>
+<td><a
+href="https://opensource.org/licenses/BSD-3-Clause">BSD-3-Clause</a></td>
+</tr>
+<tr>
+<td>BSP Components</td>
+<td>STMicroelectronics</td>
+<td><a
+href="https://opensource.org/licenses/BSD-3-Clause">BSD-3-Clause</a></td>
+</tr>
+<tr>
+<td>FreeRTOS kernel</td>
+<td>Amazon.com, Inc. or its affiliates</td>
+<td><a href="https://opensource.org/licenses/MIT">MIT</a></td>
+</tr>
+<tr>
+<td>FatFS</td>
+<td>ChaN - STMicroelectronics</td>
+<td><a
+href="https://opensource.org/licenses/BSD-3-Clause">BSD-3-Clause</a></td>
+</tr>
+<tr>
+<td>SubGHz_Phy</td>
+<td>Semtech - STMicroelectronics</td>
+<td><a
+href="https://opensource.org/licenses/BSD-3-Clause">BSD-3-Clause</a></td>
+</tr>
+<tr>
+<td>LoRaWAN</td>
+<td>Semtech - STMicroelectronics</td>
+<td><a href="https://spdx.org/licenses/BSD-3-Clause-Clear">BSD-3-Clause
+Clear</a></td>
+</tr>
+<tr>
+<td>Sigfox</td>
+<td>Sigfox - STMicroelectronics</td>
+<td><a href="#collapse-section1">SLA</a> and <a
+href="#collapse-section2">ANNEX 2</a></td>
+</tr>
+<tr>
+<td>mbed-crypto</td>
+<td>ARM Limited (or its affiliates)</td>
+<td><a
+href="https://opensource.org/licenses/Apache-2.0">Apache-2.0</a></td>
+</tr>
+<tr>
+<td>STM32_Key_Management_Services</td>
+<td>STMicroelectronics</td>
+<td><a href="#collapse-section1">SLA</a></td>
+</tr>
+<tr>
+<td>STM32_Secure_Engine</td>
+<td>STMicroelectronics</td>
+<td><a href="#collapse-section1">SLA</a></td>
+</tr>
+<tr>
+<td>STM32 Projects</td>
+<td>STMicroelectronics</td>
+<td><a href="#collapse-section1">SLA</a> (<a
+href="https://opensource.org/licenses/BSD-3-Clause">BSD-3-Clause</a> for
+basic Examples)</td>
+</tr>
+<tr>
+<td>STM32 Utilities</td>
+<td>STMicroelectronics</td>
+<td><a
+href="https://opensource.org/licenses/BSD-3-Clause">BSD-3-Clause</a></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Notes:</strong> If the license is an open source license,
+then you can access the terms at <a
+href="https://opensource.org/">www.opensource.org</a>. Otherwise, the
+full license terms are below. If a component is not listed in the SBOM,
+then the SLA shall apply unless other terms are clearly stated in the
+package.</p>
+</div>
+<div class="collapse">
+<input type="checkbox" id="collapse-section1" checked aria-hidden="true">
+<label for="collapse-section1" aria-hidden="true"><strong>SLA – Software
+License Agreement</strong></label>
+<div>
+<p>SLA0048 Rev5/October 2025</p>
+<h2 id="software-license-agreement">Software license agreement</h2>
+<h3 id="software-package-license-agreement-agreement"><strong>SOFTWARE
+PACKAGE LICENSE AGREEMENT (“AGREEMENT”)</strong></h3>
+<p>BY CLICKING ON THE “I ACCEPT” BUTTON OR BY UNZIPPING, INSTALLING,
+COPYING, DOWNLOADING, ACCESSING OR OTHERWISE USING THIS SOFTWARE PACKAGE
+OR ANY PART THEREOF, INCLUDING ANY RELATED DOCUMENTATION (collectively
+the “SOFTWARE PACKAGE”) FROM STMICROELECTRONICS INTERNATIONAL N.V, SWISS
+BRANCH AND/OR ITS AFFILIATED COMPANIES (collectively
+“STMICROELECTRONICS”), YOU (hereinafter referred also to as “THE
+RECIPIENT”), ON BEHALF OF YOURSELF, OR ON BEHALF OF ANY ENTITY BY WHICH
+YOU ARE EMPLOYED AND/OR ENGAGED, AGREE TO BE BOUND BY THIS
+AGREEMENT.</p>
+<p>Under STMICROELECTRONICS’ intellectual property rights and subject to
+applicable licensing terms for any third-party software incorporated in
+the SOFTWARE PACKAGE and applicable Open Source Terms (as defined here
+below), the redistribution, reproduction and use in source and binary
+forms of the SOFTWARE PACKAGE or any part thereof, with or without
+modification, are permitted provided that the following conditions are
+met:</p>
+<ol type="1">
+<li><p>Redistribution of source code (modified or not) must retain any
+copyright notice accompanying the SOFTWARE PACKAGE, this list of
+conditions and the disclaimer below.</p></li>
+<li><p>Redistributions in binary form, except as embedded into a
+processing unit device manufactured by or for STMicroelectronics or a
+software update for any such device, must reproduce the accompanying
+copyright notice, this list of conditions and the below disclaimer in
+capital type, in the documentation and/or other materials provided with
+the distribution.</p></li>
+<li><p>Neither the name of STMicroelectronics nor the names of other
+contributors to the SOFTWARE PACKAGE may be used to endorse or promote
+products derived from the SOFTWARE PACKAGE or part thereof without
+specific written permission.</p></li>
+<li><p>The SOFTWARE PACKAGE or any part thereof, including modifications
+and/or derivative works of the SOFTWARE PACKAGE, must be used and
+execute solely and exclusively on or in combination with a processing
+unit device manufactured by or for STMicroelectronics.</p></li>
+<li><p>No use, reproduction or redistribution of the SOFTWARE PACKAGE
+partially or totally may be done in any manner that would subject the
+SOFTWARE PACKAGE to any Open Source Terms (as defined below).</p></li>
+<li><p>Some portion of the SOFTWARE PACKAGE may contain software subject
+to Open Source Terms (as defined below) applicable for each such portion
+(“Open Source Software”), as further specified in the SOFTWARE PACKAGE.
+Such Open Source Software is supplied under the applicable Open Source
+Terms and is not subject to the terms and conditions of this AGREEMENT.
+“Open Source Terms” shall mean any open source license which requires as
+part of distribution of software that the source code of such software
+is distributed therewith or otherwise made available, or open source
+license that substantially complies with the Open Source definition
+specified at www.opensource.org and any other comparable open source
+license such as for example GNU General Public License (GPL), Eclipse
+Public License (EPL), Apache Software License, BSD license and MIT
+license.</p></li>
+<li><p>The SOFTWARE PACKAGE may also include third party software as
+expressly specified in the SOFTWARE PACKAGE subject to specific license
+terms from such third parties. Such third-party software is supplied
+under such specific license terms and is not subject to the terms and
+conditions of this AGREEMENT. By installing copying, downloading,
+accessing or otherwise using the SOFTWARE PACKAGE, the RECIPIENT agrees
+to be bound by such license terms with regard to such third-party
+software.</p></li>
+<li><p>STMicroelectronics has no obligation to provide any maintenance,
+support or updates for the SOFTWARE PACKAGE.</p></li>
+<li><p>The SOFTWARE PACKAGE is and will remain the exclusive property of
+STMicroelectronics and its licensors. The RECIPIENT will not take any
+action that jeopardizes STMicroelectronics and its licensors’
+proprietary rights or acquire any rights in the SOFTWARE PACKAGE, except
+the limited rights specified hereunder.</p></li>
+<li><p>The RECIPIENT shall comply with all applicable laws and
+regulations affecting the use of the SOFTWARE PACKAGE or any part
+thereof including any applicable export control law or
+regulation.</p></li>
+<li><p>Redistribution and use of the SOFTWARE PACKAGE partially or any
+part thereof other than as permitted under this AGREEMENT is void and
+will automatically terminate RECIPIENT’s rights under this
+AGREEMENT.</p></li>
+<li><p>The RECIPIENT shall be solely liable to determine and verify that
+the SOFTWARE PACKAGE is fit for the RECIPIENT intended use, environment
+or application and comply with all regulatory, safety and security
+related requirements concerning any use.</p></li>
+</ol>
+<p>DISCLAIMER:</p>
+<p>THE SOFTWARE PACKAGE IS PROVIDED BY STMICROELECTRONICS AND
+CONTRIBUTORS “AS IS” AND ANY EXPRESS, IMPLIED OR STATUTORY WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT
+OF THIRD PARTY INTELLECTUAL PROPERTY RIGHTS ARE DISCLAIMED TO THE
+FULLEST EXTENT PERMITTED BY LAW. IN NO EVENT SHALL STMICROELECTRONICS OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THE
+SOFTWARE PACKAGE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+EXCEPT AS EXPRESSLY PERMITTED HEREUNDER AND SUBJECT TO THE APPLICABLE
+LICENSING TERMS FOR ANY THIRD-PARTY SOFTWARE INCORPORATED IN THE
+SOFTWARE PACKAGE AND OPEN SOURCE TERMS AS APPLICABLE, NO LICENSE OR
+OTHER RIGHTS, WHETHER EXPRESS OR IMPLIED, ARE GRANTED UNDER ANY PATENT
+OR OTHER INTELLECTUAL PROPERTY RIGHTS OF STMICROELECTRONICS OR ANY THIRD
+PARTY.</p>
+</div>
+</div>
+<div class="collapse">
+<input type="checkbox" id="collapse-section2" checked aria-hidden="true">
+<label for="collapse-section2" aria-hidden="true"><strong>ANNEX 2:
+SIGFOX Specific Terms</strong></label>
+<div>
+<p>By downloading, or attempting to download, the SIGFOX protocol
+library “SFX_LIB_V2.10.0_SE_FDL_MON.a” and/or
+“SFX_ADDON_RFP_V0.8.0_SE_FDL_MON_ASYNC.a” , you are hereby informed and
+you acknowledge and agree that any use of the licensed materials is
+subject to all terms and conditions required by SIGFOX and listed
+below:</p>
+<ul>
+<li>You shall
+<ul>
+<li>respect the Partner Certification Process, described in the SIGFOX
+developer platform at http://build.SIGFOX.com to embed applicable
+authentication keys;</li>
+<li>be in compliance with all applicable laws, regulations (including
+any applicable export control law or regulation) and industry standards
+in connection with the manufacture, sale and/or distribution of
+certified products;</li>
+</ul></li>
+<li>You shall not:
+<ul>
+<li>modify or create without SIGFOX written prior agreement any
+derivative work of any part of the SIGFOX protocol library</li>
+<li>market, sell, license, distribute, publish, display, reproduce,
+rent, lease, loan, assign or otherwise transfer to a third party the
+SIGFOX protocol library or any copy thereof, in whole or in part;</li>
+<li>install or otherwise incorporate the SIGFOX protocol library into a
+product except as set forth in and in accordance with this
+document;</li>
+<li>use the SIGFOX protocol library in any way that would not be in
+compliance with applicable laws;</li>
+<li>except to the extent permitted by law, permit the disassembly,
+decompilation or reverse engineering of the SIGFOX protocol library or
+otherwise attempt to gain access to the source code to the SIGFOX
+protocol library (or the underlying ideas, algorithms, structure or
+organization of the object code in the SIGFOX protocol library)</li>
+<li>incorporate any open source software into any product, including
+with respect to certified products sold or distributed, that creates or
+purports to create any obligation to disclose to a third party any
+source code relating to the SIGFOX protocol library or grants or
+purports to grant to any third party any intellectual property of
+SIGFOX;</li>
+<li>develop, sell or distribute any product that undermines SIGFOX
+network security and integrity and/or introduces in any SIGFOX network
+any viruses, worms, Trojan horses or similar harmful or malicious code,
+or otherwise harms any SIGFOX network;</li>
+<li>remove or attempt to remove any SIGFOX authentication keys,</li>
+<li>incorporate the SIGFOX protocol library in any product for
+connection on another network than SIGFOX network. You shall inform any
+of your third party that such infringement to the obligations below
+would cause significant harm to SIGFOX.</li>
+</ul></li>
+<li>You shall have no rights to any source code for the SIGFOX protocol
+library. You agree that only SIGFOX shall have the right to maintain,
+enhance or otherwise modify the SIGFOX protocol library.</li>
+</ul>
+</div>
+</div>
+</section>
+</div>
+</body>
+</html>

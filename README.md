@@ -65,5 +65,23 @@ Le projet s'étend du 05/01/2026 et finit le 30/03/2026
 ---
 ## Etape n
 
+---
+
+## Build Apres Clone
+
+Pre-requis:
+- STM32CubeIDE installe (version recente)
+- Toolchain `GNU Tools for STM32` disponible dans l'IDE
+
+Ouverture du projet:
+1. Cloner le depot.
+2. Dans STM32CubeIDE: `File > Open Projects from File System...`
+3. Selectionner le dossier `Loraprojet`.
+4. Lancer un `Project > Clean` puis `Build`.
+
+Notes:
+- Les fichiers binaires et objets de `Loraprojet/Debug` sont regeneres localement et ne sont pas necessaires dans le depot.
+- Le projet versionne les metadonnees Eclipse (`.project`, `.cproject`, `.settings`) pour garantir l'ouverture sur une autre machine.
+
 
 
