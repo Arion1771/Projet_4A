@@ -11,6 +11,9 @@
 *.map
 *.list
 *.bin
+.metadata/
+*/.settings/language.settings.xml
+
 
 # Keep project metadata/versioned sources
 !.project
