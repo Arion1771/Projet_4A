@@ -1,0 +1,11 @@
+../Src/platform_port_stub.c:35:13:OnTxDone	1
+../Src/platform_port_stub.c:41:13:OnTxTimeout	1
+../Src/platform_port_stub.c:46:13:OnRxTimeout	1
+../Src/platform_port_stub.c:51:13:OnRxError	1
+../Src/platform_port_stub.c:56:13:OnRxDone	2
+../Src/platform_port_stub.c:70:6:platform_radio_init	2
+../Src/platform_port_stub.c:124:6:platform_radio_process	6
+../Src/platform_port_stub.c:145:10:platform_millis	1
+../Src/platform_port_stub.c:150:6:platform_radio_send	6
+../Src/platform_port_stub.c:172:6:platform_led_set	5
+../Src/platform_port_stub.c:195:10:platform_battery_mv	1

@@ -39,7 +39,16 @@ Le projet s'étend du 05/01/2026 et finit le 30/03/2026
 - Le système doit etre simple et rapide d'usage (UI minimale et application simple d'utilisation permettant la communication rapide)
 
 ---
+
+## Materiel Utilisé
+- Carte TBeam TTGO classic
+- Nucleo F411RE x2 ( utilisée seulement pour flasher du code sur les différents equipements)
+- Lora E5 Development Kit
+- WyresV2 x2
+
+
 ## Notes Entretien
+### Premier Entretien
 - module rp2040 basse consommation pas mal
 - connexion au reseau à l'allumage
 - quand s'allume lance algo et verifie bon etat reseau (communication possible+ annonce de mise a jour réseau)
@@ -49,29 +58,21 @@ Le projet s'étend du 05/01/2026 et finit le 30/03/2026
 - exagerer sur robustesse !!!!!!!
 - app telephone tres simple ( sms )
 ---
-## Diagrame UML
+## Diagramme UML
 
-### Acteurs 
--
+### Diagramme Use-Case
+![Diagramme d'Utilisation](./docs/usecase_diag.png)
 
-## Etape 0
-
----
-## Etape .
-
----
-## ...
-
----
-## Etape n
-
----
+### Diagramme de Séquence de l'envoie d'un message
+![Diagramme de Séquence](./docs/sequence_diag.png)
 
 ## Build Apres Clone
 
 Pre-requis:
-- STM32CubeIDE installe (version recente)
+- STM32CubeIDE installé (version recente)
 - Toolchain `GNU Tools for STM32` disponible dans l'IDE
+
+### Lora E5 Development Kit
 
 Ouverture du projet:
 1. Cloner le depot.
