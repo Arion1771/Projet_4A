@@ -1,3 +1,9 @@
+# Ignore build artifacts and IDE metadata
+.metadata/*
+*.log
+*.snap
+*.index
+
 # STM32CubeIDE build artifacts (keep makefiles for reproducible external builds)
 Loraprojet/Release/
 
@@ -31,4 +37,10 @@ WyresV2/Debug/**/*.elf
 WyresV2/Debug/**/*.bin
 WyresV2/Debug/**/*.map
 WyresV2/Debug/**/*.list
-
+WyresV2/Debug/WyresV2.*
+WyresV2/Debug/Src/*.o
+WyresV2/.settings/*
+WyresV2/.cproject
+WyresV2/.project
+WyresV2/.vscode/*
+WyresV2/Makefile
