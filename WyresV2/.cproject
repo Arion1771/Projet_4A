@@ -169,14 +169,9 @@
 	</storageModule>
 	<storageModule moduleId="org.eclipse.cdt.core.LanguageSettingsProviders"/>
 	<storageModule moduleId="org.eclipse.cdt.make.core.buildtargets"/>
-	<storageModule moduleId="scannerConfiguration">
-		<autodiscovery enabled="true" problemReportingEnabled="true" selectedProfileId=""/>
-		<scannerConfigBuildInfo instanceId="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.524836272;com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.debug.524836272.;com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.1619185546;com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.127933615">
-			<autodiscovery enabled="false" problemReportingEnabled="true" selectedProfileId=""/>
-		</scannerConfigBuildInfo>
-		<scannerConfigBuildInfo instanceId="com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.release.1602498252;com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.release.1602498252.;com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.1675033245;com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.1887678600">
-			<autodiscovery enabled="false" problemReportingEnabled="true" selectedProfileId=""/>
-		</scannerConfigBuildInfo>
-	</storageModule>
 	<storageModule moduleId="refreshScope"/>
+<<<<<<< Updated upstream
+=======
+	<storageModule moduleId="scannerConfiguration"/>
+>>>>>>> Stashed changes
 </cproject>
