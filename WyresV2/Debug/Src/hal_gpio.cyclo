@@ -1,9 +1,0 @@
-../Src/../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c:159:6:HAL_GPIO_Init	15
-../Src/../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c:299:6:HAL_GPIO_DeInit	7
-../Src/../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c:386:15:HAL_GPIO_ReadPin	2
-../Src/../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c:418:6:HAL_GPIO_WritePin	2
-../Src/../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c:448:6:HAL_GPIO_WriteMultipleStatePin	1
-../Src/../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c:468:6:HAL_GPIO_TogglePin	1
-../Src/../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c:493:19:HAL_GPIO_LockPin	2
-../Src/../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c:528:6:HAL_GPIO_EXTI_IRQHandler	2
-../Src/../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c:543:13:HAL_GPIO_EXTI_Callback	1

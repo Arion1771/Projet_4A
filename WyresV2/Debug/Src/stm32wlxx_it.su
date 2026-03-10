@@ -1,2 +1,0 @@
-../Src/stm32wlxx_it.c:5:6:SysTick_Handler	8	static
-../Src/stm32wlxx_it.c:11:6:SUBGHZ_Radio_IRQHandler	8	static

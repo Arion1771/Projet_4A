@@ -3,35 +3,17 @@
 *.log
 *.snap
 *.index
+.project
+.vscode/*
 
-# STM32CubeIDE build artifacts (keep makefiles for reproducible external builds)
-Loraprojet/Release/
-
-# Ignore generated binaries and intermediate objects in Debug
-Loraprojet/Debug/**/*.o
-Loraprojet/Debug/**/*.d
-Loraprojet/Debug/**/*.su
-Loraprojet/Debug/**/*.cyclo
-Loraprojet/Debug/**/*.elf
-Loraprojet/Debug/**/*.bin
-Loraprojet/Debug/**/*.map
-Loraprojet/Debug/**/*.list
-
-# Keep Debug/Inc minimal: ignore everything there except the HAL subdir recipe
-Loraprojet/Debug/Inc/**
-!Loraprojet/Debug/Inc/
-!Loraprojet/Debug/Inc/STM32Cube_FW_WL_V1.5.0/
-!Loraprojet/Debug/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/
-!Loraprojet/Debug/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/
-!Loraprojet/Debug/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/
-!Loraprojet/Debug/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/subdir.mk
+# Loraprojet build artifacts
 Loraprojet/Release/
 Loraprojet/Debug/*
 Loraprojet/.settings/*
 Loraprojet/.cproject
 Loraprojet/.project
 Loraprojet/.vscode/*
-Loraprojet/Makefile
+Loraprojet/makefile
 
 # WyresV2 build artifacts
 WyresV2/Release/
@@ -40,4 +22,4 @@ WyresV2/.settings/*
 WyresV2/.cproject
 WyresV2/.project
 WyresV2/.vscode/*
-WyresV2/Makefile
+WyresV2/makefile

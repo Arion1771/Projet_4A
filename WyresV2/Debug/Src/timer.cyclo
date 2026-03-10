@@ -1,8 +1,0 @@
-../Src/timer.c:6:13:TimerRemove	4
-../Src/timer.c:26:6:TimerInit	2
-../Src/timer.c:39:6:TimerSetValue	2
-../Src/timer.c:47:6:TimerStart	3
-../Src/timer.c:59:6:TimerStop	2
-../Src/timer.c:68:13:TimerGetCurrentTime	1
-../Src/timer.c:73:13:TimerGetElapsedTime	1
-../Src/timer.c:78:6:TimerProcess	5
