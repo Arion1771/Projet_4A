@@ -12,3 +12,8 @@ void SUBGHZ_Radio_IRQHandler(void)
 {
     HAL_SUBGHZ_IRQHandler(&hsubghz);
 }
+
+void Radio_IRQ_Busy_IRQHandler(void)
+{
+    HAL_SUBGHZ_IRQHandler(&hsubghz);
+}

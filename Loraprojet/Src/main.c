@@ -24,6 +24,7 @@ static uint8_t uart2_ready = 0U;
 static RadioEvents_t radio_events;
 
 static volatile uint8_t radio_tx_done = 0;
+static volatile uint8_t radio_tx_timeout = 0;
 static volatile uint8_t radio_rx_done = 0;
 static volatile uint8_t radio_rx_timeout = 0;
 static volatile uint8_t radio_rx_error = 0;
@@ -48,10 +49,13 @@ static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
 
 int main(void)
 {
-    uint32_t loop_counter = 0U;
-    uint32_t last_tx_loop = 0U;
+    RadioState_t radio_state;
+    uint32_t now_ms;
+    uint32_t last_tx_ms = 0U;
+    uint32_t tx_start_ms = 0U;
     uint32_t tx_counter = 0U;
     uint32_t alive_counter = 0U;
+    uint8_t tx_pending = 0U;
     char tx_msg[40];
 
     HAL_Init();
@@ -68,6 +72,8 @@ int main(void)
 
     while (1)
     {
+        /* Required by SubGHz PHY stack to dispatch radio callbacks. */
+        Radio.IrqProcess();
         TimerProcess();
 
         if (radio_rx_done != 0U)
@@ -85,7 +91,19 @@ int main(void)
         if (radio_tx_done != 0U)
         {
             radio_tx_done = 0U;
-            Uart_Log("TX DONE\r\n");
+            if (tx_pending != 0U)
+            {
+                tx_pending = 0U;
+                Uart_Log("TX DONE\r\n");
+                Radio.Rx(0);
+            }
+        }
+
+        if (radio_tx_timeout != 0U)
+        {
+            radio_tx_timeout = 0U;
+            tx_pending = 0U;
+            Uart_Log("TX TIMEOUT\r\n");
             Radio.Rx(0);
         }
 
@@ -103,21 +121,43 @@ int main(void)
             Radio.Rx(0);
         }
 
-        loop_counter++;
+        if (tx_pending != 0U)
+        {
+            radio_state = Radio.GetStatus();
 
-        if ((loop_counter - last_tx_loop) >= 20000U)
+            /* Recover if TX callback was missed but radio is no longer transmitting. */
+            if (radio_state != RF_TX_RUNNING)
+            {
+                tx_pending = 0U;
+                Uart_Log("TX RECOVER\r\n");
+                Radio.Rx(0);
+            }
+            else if ((HAL_GetTick() - tx_start_ms) > (TX_TIMEOUT_MS + 1000U))
+            {
+                /* Hard recovery when TX never completes on IRQ path. */
+                tx_pending = 0U;
+                Uart_Log("TX STALL RESET\r\n");
+                Radio.Standby();
+                Radio.Rx(0);
+            }
+        }
+
+        now_ms = HAL_GetTick();
+
+        if ((tx_pending == 0U) && ((now_ms - last_tx_ms) >= APP_TX_PERIOD_MS))
         {
             /* Force a fresh TX cycle without relying on pending IRQ processing. */
             Radio.Standby();
             (void)snprintf(tx_msg, sizeof(tx_msg), "MSG %lu", (unsigned long)tx_counter++);
             Radio.Send((uint8_t *)tx_msg, (uint8_t)strlen(tx_msg));
-            Radio.Rx(0);
+            tx_pending = 1U;
+            tx_start_ms = HAL_GetTick();
 
             Uart_Log("TX: ");
             Uart_Log(tx_msg);
             Uart_Log("\r\n");
 
-            last_tx_loop = loop_counter;
+            last_tx_ms = now_ms;
         }
 
         alive_counter++;
@@ -192,7 +232,7 @@ static void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr)
 
 static void OnTxTimeout(void)
 {
-    radio_rx_timeout = 1U;
+    radio_tx_timeout = 1U;
 }
 
 static void OnRxTimeout(void)
