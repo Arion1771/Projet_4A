@@ -25,20 +25,17 @@ Loraprojet/Debug/Inc/**
 !Loraprojet/Debug/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/
 !Loraprojet/Debug/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/
 !Loraprojet/Debug/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/subdir.mk
+Loraprojet/Release/
+Loraprojet/Debug/*
+Loraprojet/.settings/*
+Loraprojet/.cproject
+Loraprojet/.project
+Loraprojet/.vscode/*
+Loraprojet/Makefile
 
 # WyresV2 build artifacts
 WyresV2/Release/
-WyresV2/Debug/
-WyresV2/Debug/**/*.o
-WyresV2/Debug/**/*.d
-WyresV2/Debug/**/*.su
-WyresV2/Debug/**/*.cyclo
-WyresV2/Debug/**/*.elf
-WyresV2/Debug/**/*.bin
-WyresV2/Debug/**/*.map
-WyresV2/Debug/**/*.list
-WyresV2/Debug/WyresV2.*
-WyresV2/Debug/Src/*.o
+WyresV2/Debug/*
 WyresV2/.settings/*
 WyresV2/.cproject
 WyresV2/.project
