@@ -14,12 +14,16 @@
 #define LORA_SYMBOL_TIMEOUT    5
 #define RX_TIMEOUT_MS          3000U
 #define TX_TIMEOUT_MS          3000U
-#define APP_TX_PERIOD_MS       5000U
+#define APP_TX_PERIOD_MS       2000U
 #define FRAME_VERSION          1U
 #define MSG_TEXT               1U
 #define NODE_ID_E5             0xE501U
 #define NODE_ID_WYRES          0x0201U
 #define MAX_FRAME_PAYLOAD      64U
+#define DEBUG_LED1_PORT        GPIOB
+#define DEBUG_LED1_PIN         GPIO_PIN_5
+#define DEBUG_LED2_PORT        GPIOA
+#define DEBUG_LED2_PIN         GPIO_PIN_5
 
 typedef struct
 {
@@ -67,13 +71,15 @@ static void Uart_Log(const char *msg);
 static void Uart_LogHex(const uint8_t *data, uint16_t size);
 static void Uart_LogText(const uint8_t *data, uint16_t size);
 static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
+static void LedFlashPattern(uint8_t flashes);
+static void DebugLedWrite(GPIO_PinState state);
 static uint8_t BuildTextFrame(AppFrame_t *frame, const uint8_t *payload, uint8_t size);
 
 int main(void)
 {
 	uint32_t last_tx_tick = 0;
 	uint32_t last_alive_tick = 0;
-	const uint8_t tx_payload[] = "E5->WYRES";
+	const uint8_t tx_payload[] = "PING";
 	AppFrame_t tx_frame;
 	uint8_t tx_len = 0;
 
@@ -109,6 +115,13 @@ int main(void)
 				Uart_Log("RX FRAME TEXT: ");
 				Uart_LogText(frame.payload, frame.payload_len);
 				Uart_Log("\r\n");
+
+				if ((frame.payload_len == 4U) && (memcmp(frame.payload, "PONG", 4U) == 0))
+				{
+					/* Link confirmation pattern when Wyres answers E5 ping. */
+					LedFlashPattern(4U);
+					Uart_Log("LINK OK (PONG)\r\n");
+				}
 			}
 			else
 			{
@@ -119,13 +132,14 @@ int main(void)
 				Uart_Log("\r\n");
 			}
 
-			HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+			LedFlashPattern(2U);
 			Radio.Rx(0);
 		}
 
 		if (radio_tx_done != 0U)
 		{
 			radio_tx_done = 0U;
+			LedFlashPattern(1U);
 			Uart_Log("TX DONE\r\n");
 			Radio.Rx(0);
 		}
@@ -133,6 +147,7 @@ int main(void)
 		if (radio_rx_timeout != 0U)
 		{
 			radio_rx_timeout = 0U;
+			LedFlashPattern(3U);
 			Uart_Log("RX TIMEOUT\r\n");
 			Radio.Rx(0);
 		}
@@ -140,6 +155,7 @@ int main(void)
 		if (radio_rx_error != 0U)
 		{
 			radio_rx_error = 0U;
+			LedFlashPattern(3U);
 			Uart_Log("RX ERROR\r\n");
 			Radio.Rx(0);
 		}
@@ -301,6 +317,25 @@ static void Uart_TransmitAll(const uint8_t *buf, uint16_t len)
 	}
 }
 
+static void LedFlashPattern(uint8_t flashes)
+{
+	uint8_t i;
+
+	for (i = 0U; i < flashes; i++)
+	{
+		DebugLedWrite(GPIO_PIN_SET);
+		HAL_Delay(60U);
+		DebugLedWrite(GPIO_PIN_RESET);
+		HAL_Delay(90U);
+	}
+}
+
+static void DebugLedWrite(GPIO_PinState state)
+{
+	HAL_GPIO_WritePin(DEBUG_LED1_PORT, DEBUG_LED1_PIN, state);
+	HAL_GPIO_WritePin(DEBUG_LED2_PORT, DEBUG_LED2_PIN, state);
+}
+
 static uint8_t BuildTextFrame(AppFrame_t *frame, const uint8_t *payload, uint8_t size)
 {
 	if (size > MAX_FRAME_PAYLOAD)
@@ -329,15 +364,22 @@ static void MX_GPIO_Init(void)
 {
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
 
-	GPIO_InitStruct.Pin = LED_Pin;
+	GPIO_InitStruct.Pin = DEBUG_LED1_PIN;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
+	HAL_GPIO_Init(DEBUG_LED1_PORT, &GPIO_InitStruct);
 
-	HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+	GPIO_InitStruct.Pin = DEBUG_LED2_PIN;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(DEBUG_LED2_PORT, &GPIO_InitStruct);
+
+	DebugLedWrite(GPIO_PIN_RESET);
 }
 
 static void MX_USART1_UART_Init(void)
@@ -396,10 +438,7 @@ static void MX_USART1_UART_Init(void)
 		uart1_ready = 1U;
 	}
 
-	if ((uart1_ready == 0U) && (uart2_ready == 0U))
-	{
-		Error_Handler();
-	}
+	/* No UART available: keep firmware running and rely on LED/radio behavior. */
 }
 
 static void SystemClock_Config(void)
