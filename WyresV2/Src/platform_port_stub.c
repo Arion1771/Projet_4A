@@ -23,6 +23,7 @@
 #define DEBUG_LED1_PIN  GPIO_PIN_5
 #define DEBUG_LED2_PORT GPIOA
 #define DEBUG_LED2_PIN  GPIO_PIN_5
+#define LED_ACTIVE_LOW  1U
 
 static RadioEvents_t s_radio_events;
 static platform_radio_rx_cb_t s_rx_cb = NULL;
@@ -37,19 +38,25 @@ static int16_t s_rx_rssi = 0;
 static int8_t s_rx_snr = 0;
 static uint8_t s_radio_inited = 0;
 
-static void DebugLedWrite(GPIO_PinState state)
+static void DebugLedOn(void)
 {
-    HAL_GPIO_WritePin(DEBUG_LED1_PORT, DEBUG_LED1_PIN, state);
-    HAL_GPIO_WritePin(DEBUG_LED2_PORT, DEBUG_LED2_PIN, state);
+    HAL_GPIO_WritePin(DEBUG_LED1_PORT, DEBUG_LED1_PIN, (LED_ACTIVE_LOW != 0U) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    HAL_GPIO_WritePin(DEBUG_LED2_PORT, DEBUG_LED2_PIN, (LED_ACTIVE_LOW != 0U) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+}
+
+static void DebugLedOff(void)
+{
+    HAL_GPIO_WritePin(DEBUG_LED1_PORT, DEBUG_LED1_PIN, (LED_ACTIVE_LOW != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(DEBUG_LED2_PORT, DEBUG_LED2_PIN, (LED_ACTIVE_LOW != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
 static void LedFlashPattern(uint8_t flashes)
 {
     uint8_t i;
     for (i = 0U; i < flashes; i++) {
-        DebugLedWrite(GPIO_PIN_SET);
+        DebugLedOn();
         HAL_Delay(60U);
-        DebugLedWrite(GPIO_PIN_RESET);
+        DebugLedOff();
         HAL_Delay(90U);
     }
 }
@@ -144,10 +151,10 @@ bool platform_radio_init(platform_radio_rx_cb_t cb)
 void platform_radio_process(void)
 {
     TimerProcess();
+    Radio.IrqProcess();
 
     if (s_radio_rx_done != 0U) {
         s_radio_rx_done = 0U;
-        LedFlashPattern(2U);
         if (s_rx_cb != NULL) {
             /* Direction resolution requires network context; default for now. */
             s_rx_cb(LINK_PREDECESSOR, s_rx_buffer, s_rx_len, s_rx_rssi, s_rx_snr);
@@ -157,7 +164,6 @@ void platform_radio_process(void)
 
     if (s_radio_tx_done != 0U) {
         s_radio_tx_done = 0U;
-        LedFlashPattern(1U);
         Radio.Rx(0);
     }
 
@@ -165,7 +171,6 @@ void platform_radio_process(void)
         s_radio_tx_timeout = 0U;
         s_radio_rx_timeout = 0U;
         s_radio_rx_error = 0U;
-        LedFlashPattern(3U);
         Radio.Rx(0);
     }
 }
@@ -201,7 +206,7 @@ void platform_led_set(led_state_t state)
 {
     (void)state;
     /* Debug mode: keep LED off at idle; only flash patterns indicate events. */
-    DebugLedWrite(GPIO_PIN_RESET);
+    DebugLedOff();
 }
 
 uint16_t platform_battery_mv(void)
