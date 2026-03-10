@@ -4,6 +4,11 @@
 
 #include <string.h>
 
+#define DEBUG_LED1_PORT GPIOB
+#define DEBUG_LED1_PIN  GPIO_PIN_5
+#define DEBUG_LED2_PORT GPIOA
+#define DEBUG_LED2_PIN  GPIO_PIN_5
+
 static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void OnRadioRx(link_direction_t from, const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr);
@@ -44,6 +49,7 @@ int main(void)
 static void OnRadioRx(link_direction_t from, const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr)
 {
     wyresv2_frame_t frame;
+    const uint8_t pong_msg[] = "PONG";
 
     if ((s_ctx == NULL) || (data == NULL) || (len == 0U)) {
         return;
@@ -73,6 +79,11 @@ static void OnRadioRx(link_direction_t from, const uint8_t *data, uint16_t len, 
     }
 
     wyresv2_on_frame(s_ctx, from, &frame, rssi, snr);
+
+    /* Deterministic interop check: reply to E5 text frames with PONG. */
+    if ((frame.type == MSG_TEXT) && (frame.src_id == 0xE501U)) {
+        (void)wyresv2_send_text(s_ctx, 0xE501U, pong_msg, (uint8_t)(sizeof(pong_msg) - 1U));
+    }
 }
 
 static void SystemClock_Config(void)
@@ -102,15 +113,23 @@ static void MX_GPIO_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+    __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
-    GPIO_InitStruct.Pin = LED_Pin;
+    GPIO_InitStruct.Pin = DEBUG_LED1_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
+    HAL_GPIO_Init(DEBUG_LED1_PORT, &GPIO_InitStruct);
 
-    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+    GPIO_InitStruct.Pin = DEBUG_LED2_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(DEBUG_LED2_PORT, &GPIO_InitStruct);
+
+    HAL_GPIO_WritePin(DEBUG_LED1_PORT, DEBUG_LED1_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(DEBUG_LED2_PORT, DEBUG_LED2_PIN, GPIO_PIN_RESET);
 }
 
 void Error_Handler(void)
