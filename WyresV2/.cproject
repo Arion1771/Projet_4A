@@ -78,7 +78,7 @@
 					<sourceEntries>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Startup"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Src"/>
-						<entry excluding="stm32wlxx_hal_timebase_rtc_alarm_template.c|stm32wlxx_hal_timebase_rtc_wakeup_template.c|stm32wlxx_hal_timebase_tim_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Src"/>
+						<entry excluding="stm32wlxx_hal_timebase_rtc_alarm_template.c|stm32wlxx_hal_timebase_rtc_wakeup_template.c|stm32wlxx_hal_timebase_tim_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -156,7 +156,7 @@
 					<sourceEntries>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Startup"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Src"/>
-						<entry excluding="stm32wlxx_hal_timebase_rtc_alarm_template.c|stm32wlxx_hal_timebase_rtc_wakeup_template.c|stm32wlxx_hal_timebase_tim_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Src"/>
+						<entry excluding="stm32wlxx_hal_timebase_rtc_alarm_template.c|stm32wlxx_hal_timebase_rtc_wakeup_template.c|stm32wlxx_hal_timebase_tim_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -165,7 +165,7 @@
 	</storageModule>
 	<storageModule moduleId="org.eclipse.cdt.core.pathentry"/>
 	<storageModule moduleId="cdtBuildSystem" version="4.0.0">
-		<project id="WyresV2.null.927267085" name="WyresV2"/>
+		<project id="WyresV2.null.327267085" name="WyresV2"/>
 	</storageModule>
 	<storageModule moduleId="org.eclipse.cdt.core.LanguageSettingsProviders"/>
 	<storageModule moduleId="org.eclipse.cdt.make.core.buildtargets"/>
@@ -180,4 +180,3 @@
 	</storageModule>
 	<storageModule moduleId="refreshScope"/>
 </cproject>
-

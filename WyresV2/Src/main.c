@@ -32,6 +32,10 @@ static void OnRadioRx(link_direction_t from, const uint8_t *data, uint16_t len, 
         return;
     }
 
+    /* Visual confirmation: toggle LED on each received radio payload. */
+    HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+
     /* Echo relay: retransmit exactly what was received. */
     (void)platform_radio_send(LINK_SUCCESSOR, data, len);
 }

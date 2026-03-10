@@ -72,7 +72,7 @@ Pre-requis:
 - STM32CubeIDE installé (version recente)
 - Toolchain `GNU Tools for STM32` disponible dans l'IDE
 
-### Lora E5 Development Kit
+### Lora E5 Development Kit (`Loraprojet`)
 
 Ouverture du projet:
 1. Cloner le depot.
@@ -83,6 +83,18 @@ Ouverture du projet:
 Notes:
 - Les fichiers binaires et objets de `Loraprojet/Debug` sont regeneres localement et ne sont pas necessaires dans le depot.
 - Le projet versionne les metadonnees Eclipse (`.project`, `.cproject`, `.settings`) pour garantir l'ouverture sur une autre machine.
+
+### WyresV2
+
+Ouverture du projet:
+1. Cloner le depot.
+2. Dans STM32CubeIDE: `File > Open Projects from File System...`
+3. Selectionner le dossier `WyresV2`.
+4. Lancer un `Project > Clean` puis `Build`.
+
+Notes:
+- Les fichiers de `WyresV2/Debug` sont generes localement et ne doivent pas etre relies pour partager le projet.
+- Les chemins de build portables sont portes par `.project/.cproject`; un `Clean` regenere les makefiles locaux.
 
 
 

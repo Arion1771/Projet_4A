@@ -48,8 +48,10 @@ static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
 
 int main(void)
 {
-    uint32_t last_tx_tick = 0U;
+    uint32_t loop_counter = 0U;
+    uint32_t last_tx_loop = 0U;
     uint32_t tx_counter = 0U;
+    uint32_t alive_counter = 0U;
     char tx_msg[40];
 
     HAL_Init();
@@ -67,7 +69,6 @@ int main(void)
     while (1)
     {
         TimerProcess();
-        Radio.IrqProcess();
 
         if (radio_rx_done != 0U)
         {
@@ -102,28 +103,29 @@ int main(void)
             Radio.Rx(0);
         }
 
-        if ((HAL_GetTick() - last_tx_tick) >= APP_TX_PERIOD_MS)
+        loop_counter++;
+
+        if ((loop_counter - last_tx_loop) >= 20000U)
         {
-            RadioState_t state = Radio.GetStatus();
-            if (state != RF_TX_RUNNING)
-            {
-                if (state == RF_RX_RUNNING)
-                {
-                    Radio.Standby();
-                }
+            /* Force a fresh TX cycle without relying on pending IRQ processing. */
+            Radio.Standby();
+            (void)snprintf(tx_msg, sizeof(tx_msg), "MSG %lu", (unsigned long)tx_counter++);
+            Radio.Send((uint8_t *)tx_msg, (uint8_t)strlen(tx_msg));
+            Radio.Rx(0);
 
-                (void)snprintf(tx_msg, sizeof(tx_msg), "MSG %lu", (unsigned long)tx_counter++);
-                Radio.Send((uint8_t *)tx_msg, (uint8_t)strlen(tx_msg));
+            Uart_Log("TX: ");
+            Uart_Log(tx_msg);
+            Uart_Log("\r\n");
 
-                Uart_Log("TX: ");
-                Uart_Log(tx_msg);
-                Uart_Log("\r\n");
-
-                last_tx_tick = HAL_GetTick();
-            }
+            last_tx_loop = loop_counter;
         }
 
-        HAL_Delay(5U);
+        alive_counter++;
+        if (alive_counter >= 80000U)
+        {
+            alive_counter = 0U;
+            Uart_Log("ALIVE\r\n");
+        }
     }
 }
 
@@ -319,35 +321,24 @@ static void MX_USART_UART_Init(void)
 
 static void SystemClock_Config(void)
 {
-    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_OscInitTypeDef osc = {0};
+    RCC_ClkInitTypeDef clk = {0};
 
-    HAL_PWR_EnableBkUpAccess();
-    __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
-
-    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE | RCC_OSCILLATORTYPE_MSI;
-    RCC_OscInitStruct.LSEState = RCC_LSE_ON;
-    RCC_OscInitStruct.MSIState = RCC_MSI_ON;
-    RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-    RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_11;
-    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+    osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    osc.HSIState = RCC_HSI_ON;
+    osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    osc.PLL.PLLState = RCC_PLL_NONE;
+    if (HAL_RCC_OscConfig(&osc) != HAL_OK)
     {
         Error_Handler();
     }
 
-    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK3 | RCC_CLOCKTYPE_HCLK
-                                | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1
-                                | RCC_CLOCKTYPE_PCLK2;
-    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
-    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-    RCC_ClkInitStruct.AHBCLK3Divider = RCC_SYSCLK_DIV1;
-
-    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+    clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    clk.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+    clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    clk.APB1CLKDivider = RCC_HCLK_DIV1;
+    clk.APB2CLKDivider = RCC_HCLK_DIV1;
+    if (HAL_RCC_ClockConfig(&clk, LL_FLASH_LATENCY_0) != HAL_OK)
     {
         Error_Handler();
     }

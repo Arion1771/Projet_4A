@@ -1,21 +1,18 @@
-# Ignore build artifacts and IDE metadata
-.metadata/*
-*.log
-*.snap
-*.index
-.project
-.vscode/*
+# STM32CubeIDE generated build outputs (machine/local dependent)
+**/Debug/
+**/Release/
 
-# Loraprojet build artifacts
-Loraprojet/Release/
-Loraprojet/Debug/*
-Loraprojet/.settings/*
-Loraprojet/.vscode/*
-Loraprojet/makefile
+# Common compiler/linker artifacts
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.list
+*.bin
 
-# WyresV2 build artifacts
-WyresV2/Release/
-WyresV2/Debug/*
-WyresV2/.settings/*
-WyresV2/.vscode/*
-WyresV2/makefile
+# Keep project metadata/versioned sources
+!.project
+!.cproject
+!.settings/
