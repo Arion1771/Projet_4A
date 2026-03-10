@@ -150,6 +150,8 @@ bool platform_radio_init(platform_radio_rx_cb_t cb)
 
 void platform_radio_process(void)
 {
+    RadioState_t state;
+
     TimerProcess();
     Radio.IrqProcess();
 
@@ -159,7 +161,12 @@ void platform_radio_process(void)
             /* Direction resolution requires network context; default for now. */
             s_rx_cb(LINK_PREDECESSOR, s_rx_buffer, s_rx_len, s_rx_rssi, s_rx_snr);
         }
-        Radio.Rx(0);
+
+        /* If callback triggered relay TX, do not interrupt it by forcing RX. */
+        state = Radio.GetStatus();
+        if (state != RF_TX_RUNNING) {
+            Radio.Rx(0);
+        }
     }
 
     if (s_radio_tx_done != 0U) {
