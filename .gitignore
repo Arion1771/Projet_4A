@@ -10,8 +10,6 @@
 Loraprojet/Release/
 Loraprojet/Debug/*
 Loraprojet/.settings/*
-Loraprojet/.cproject
-Loraprojet/.project
 Loraprojet/.vscode/*
 Loraprojet/makefile
 
@@ -19,7 +17,5 @@ Loraprojet/makefile
 WyresV2/Release/
 WyresV2/Debug/*
 WyresV2/.settings/*
-WyresV2/.cproject
-WyresV2/.project
 WyresV2/.vscode/*
 WyresV2/makefile
