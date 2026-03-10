@@ -1,0 +1,9 @@
+../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Inc/stm32wlxx_ll_bus.h:449:22:LL_AHB2_GRP1_EnableClock	24	static
+../Src/radio_board_if.c:3:13:RBI_SetRfSwitch	16	static
+../Src/radio_board_if.c:9:9:RBI_Init	32	static
+../Src/radio_board_if.c:31:9:RBI_DeInit	8	static
+../Src/radio_board_if.c:38:9:RBI_ConfigRFSwitch	16	static
+../Src/radio_board_if.c:56:9:RBI_GetTxConfig	4	static
+../Src/radio_board_if.c:61:9:RBI_IsTCXO	4	static
+../Src/radio_board_if.c:66:9:RBI_IsDCDC	4	static
+../Src/radio_board_if.c:71:9:RBI_GetRFOMaxPowerConfig	16	static

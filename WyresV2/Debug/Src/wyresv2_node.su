@@ -1,0 +1,14 @@
+../Src/wyresv2_node.c:26:25:opposite_dir	16	static
+../Src/wyresv2_node.c:31:13:send_frame	16	static
+../Src/wyresv2_node.c:36:13:set_led_for_state	16	static
+../Src/wyresv2_node.c:49:13:queue_pending	32	static
+../Src/wyresv2_node.c:66:13:ack_pending	24	static
+../Src/wyresv2_node.c:77:13:send_ack	96	static
+../Src/wyresv2_node.c:94:13:forward_with_ack	32	static
+../Src/wyresv2_node.c:117:13:discover_and_join	96	static
+../Src/wyresv2_node.c:136:6:wyresv2_init	16	static
+../Src/wyresv2_node.c:150:6:wyresv2_power_on	16	static
+../Src/wyresv2_node.c:162:6:wyresv2_tick	96	static
+../Src/wyresv2_node.c:209:6:wyresv2_on_frame	104	static
+../Src/wyresv2_node.c:252:6:wyresv2_send_text	104	static
+../Src/wyresv2_node.c:276:6:wyresv2_send_alert	104	static
