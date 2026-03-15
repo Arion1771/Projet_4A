@@ -13,6 +13,7 @@ static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART_UART_Init(void);
 static void OnRadioRx(link_direction_t from, const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr);
+static void BootBlink(void);
 
 static UART_HandleTypeDef huart1;
 static UART_HandleTypeDef huart2;
@@ -25,9 +26,12 @@ static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
 
 int main(void)
 {
+    uint32_t last_heartbeat_ms = 0U;
+
     HAL_Init();
     SystemClock_Config();
     MX_GPIO_Init();
+    BootBlink();
     MX_USART_UART_Init();
 
     Uart_Log("BOOT WYRESV2\r\n");
@@ -40,6 +44,13 @@ int main(void)
     Uart_Log("RADIO INIT OK\r\n");
 
     for (;;) {
+        if ((HAL_GetTick() - last_heartbeat_ms) >= 500U) {
+            HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+            HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+            last_heartbeat_ms = HAL_GetTick();
+            Uart_Log("WYRES ALIVE\r\n");
+        }
+
         platform_radio_process();
         HAL_Delay(2U);
     }
@@ -128,6 +139,20 @@ static void MX_GPIO_Init(void)
 
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+}
+
+static void BootBlink(void)
+{
+    uint8_t i;
+
+    for (i = 0U; i < 3U; i++) {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET);
+        HAL_Delay(100U);
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+        HAL_Delay(100U);
+    }
 }
 
 static void MX_USART_UART_Init(void)
