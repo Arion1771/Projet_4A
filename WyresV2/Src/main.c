@@ -33,9 +33,9 @@ int main(void)
     bool ping_ok;
 
     HAL_Init();
-    SystemClock_Config();
     MX_GPIO_Init();
     BootBlink();
+    SystemClock_Config();
     MX_USART_UART_Init();
 
     Uart_Log("BOOT WYRESV2\r\n");
@@ -265,7 +265,24 @@ static void Uart_TransmitAll(const uint8_t *buf, uint16_t len)
 
 void Error_Handler(void)
 {
-    __disable_irq();
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    volatile uint32_t d;
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    GPIO_InitStruct.Pin = GPIO_PIN_5;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
     while (1) {
+        HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+        for (d = 0U; d < 250000U; d++) {
+            __NOP();
+        }
     }
 }
