@@ -21,8 +21,6 @@
 #define WYRESV2_TX_TIMEOUT_MS 3000
 #define DEBUG_LED1_PORT GPIOB
 #define DEBUG_LED1_PIN  GPIO_PIN_5
-#define DEBUG_LED2_PORT GPIOA
-#define DEBUG_LED2_PIN  GPIO_PIN_5
 #define LED_ACTIVE_LOW  1U
 
 static RadioEvents_t s_radio_events;
@@ -41,13 +39,11 @@ static uint8_t s_radio_inited = 0;
 static void DebugLedOn(void)
 {
     HAL_GPIO_WritePin(DEBUG_LED1_PORT, DEBUG_LED1_PIN, (LED_ACTIVE_LOW != 0U) ? GPIO_PIN_RESET : GPIO_PIN_SET);
-    HAL_GPIO_WritePin(DEBUG_LED2_PORT, DEBUG_LED2_PIN, (LED_ACTIVE_LOW != 0U) ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
 static void DebugLedOff(void)
 {
     HAL_GPIO_WritePin(DEBUG_LED1_PORT, DEBUG_LED1_PIN, (LED_ACTIVE_LOW != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(DEBUG_LED2_PORT, DEBUG_LED2_PIN, (LED_ACTIVE_LOW != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
 static void LedFlashPattern(uint8_t flashes)

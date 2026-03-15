@@ -49,8 +49,7 @@ int main(void)
 
     for (;;) {
         if ((HAL_GetTick() - last_heartbeat_ms) >= 500U) {
-            HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-            HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+            HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
             last_heartbeat_ms = HAL_GetTick();
             Uart_Log("WYRES ALIVE\r\n");
         }
@@ -92,8 +91,7 @@ static void OnRadioRx(link_direction_t from, const uint8_t *data, uint16_t len, 
     Uart_Log("\r\n");
 
     /* Visual confirmation: toggle LED on each received radio payload. */
-    HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+    HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 
     /*
      * Give the sender a short guard time to switch back to RX after TX_DONE.
@@ -144,18 +142,15 @@ static void MX_GPIO_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
-    GPIO_InitStruct.Pin = GPIO_PIN_5;
+    GPIO_InitStruct.Pin = LED_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
 
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 }
 
 static void BootBlink(void)
@@ -163,11 +158,9 @@ static void BootBlink(void)
     uint8_t i;
 
     for (i = 0U; i < 3U; i++) {
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
         HAL_Delay(100U);
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
         HAL_Delay(100U);
     }
 }
@@ -268,19 +261,16 @@ void Error_Handler(void)
     GPIO_InitTypeDef GPIO_InitStruct = {0};
     volatile uint32_t d;
 
-    __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
-    GPIO_InitStruct.Pin = GPIO_PIN_5;
+    GPIO_InitStruct.Pin = LED_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
 
     while (1) {
-        HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
         for (d = 0U; d < 250000U; d++) {
             __NOP();
         }
