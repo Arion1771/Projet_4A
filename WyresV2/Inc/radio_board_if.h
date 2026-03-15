@@ -20,6 +20,13 @@
 #define TCXO_PWR_PORT GPIOB
 #define TCXO_PWR_PIN GPIO_PIN_0
 
+/*
+ * Wyres v2 antenna switch behavior from mynewt-wbasev2-bsp:
+ * revB: TX=(1,0), RX=(0,1)
+ * revC/revD+: TX=(0,1), RX=(1,1)
+ */
+#define WYRES_HW_REV_GE_2 1
+
 typedef enum {
     RBI_SWITCH_OFF = 0,
     RBI_SWITCH_RX = 1,

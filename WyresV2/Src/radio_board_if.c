@@ -39,11 +39,19 @@ int32_t RBI_ConfigRFSwitch(RBI_Switch_TypeDef Config)
 {
     switch (Config) {
         case RBI_SWITCH_RX:
-            RBI_SetRfSwitch(1, 0);
+#if WYRES_HW_REV_GE_2
+            RBI_SetRfSwitch(1, 1);
+#else
+            RBI_SetRfSwitch(0, 1);
+#endif
             break;
         case RBI_SWITCH_RFO_LP:
         case RBI_SWITCH_RFO_HP:
+#if WYRES_HW_REV_GE_2
             RBI_SetRfSwitch(0, 1);
+#else
+            RBI_SetRfSwitch(1, 0);
+#endif
             break;
         case RBI_SWITCH_OFF:
         default:
