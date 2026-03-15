@@ -27,6 +27,10 @@ static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
 int main(void)
 {
     uint32_t last_heartbeat_ms = 0U;
+    uint32_t last_ping_ms = 0U;
+    uint32_t ping_counter = 0U;
+    char ping_msg[40];
+    bool ping_ok;
 
     HAL_Init();
     SystemClock_Config();
@@ -49,6 +53,19 @@ int main(void)
             HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
             last_heartbeat_ms = HAL_GetTick();
             Uart_Log("WYRES ALIVE\r\n");
+        }
+
+        if ((HAL_GetTick() - last_ping_ms) >= 2000U) {
+            (void)snprintf(ping_msg, sizeof(ping_msg), "WYRES PING %lu", (unsigned long)ping_counter++);
+            ping_ok = platform_radio_send(LINK_SUCCESSOR, (const uint8_t *)ping_msg, (uint16_t)strlen(ping_msg));
+            if (ping_ok) {
+                Uart_Log("PING TX: ");
+                Uart_Log(ping_msg);
+                Uart_Log("\r\n");
+            } else {
+                Uart_Log("PING TX FAIL\r\n");
+            }
+            last_ping_ms = HAL_GetTick();
         }
 
         platform_radio_process();
