@@ -8,7 +8,9 @@
 #define AHBPERIPH_BASE             (PERIPH_BASE + 0x00020000UL)
 #define GPIOA_BASE                 (AHBPERIPH_BASE + 0x0000UL)
 #define GPIOB_BASE                 (AHBPERIPH_BASE + 0x0400UL)
+#define GPIOC_BASE                 (AHBPERIPH_BASE + 0x0800UL)
 #define RCC_BASE                   (AHBPERIPH_BASE + 0x3800UL)
+#define AFIO_BASE                  (APB2PERIPH_BASE + 0x0000UL)
 #define SPI1_BASE                  (APB2PERIPH_BASE + 0x3000UL)
 
 #define LED1_PIN                   (1UL << 0)   /* PA0  */
@@ -16,7 +18,12 @@
 
 #define RCC_AHBENR_GPIOAEN         (1UL << 0)
 #define RCC_AHBENR_GPIOBEN         (1UL << 1)
+#define RCC_AHBENR_GPIOCEN         (1UL << 2)
 #define RCC_APB2ENR_SPI1EN         (1UL << 12)
+#define RCC_APB2ENR_AFIOEN         (1UL << 0)
+
+#define AFIO_MAPR_SWJ_CFG_MASK         (7UL << 24)
+#define AFIO_MAPR_SWJ_CFG_JTAGDISABLE  (2UL << 24)
 
 #define GPIO_AF_SPI1               5UL
 
@@ -24,6 +31,8 @@
 #define SPI_CR1_CPOL               (1UL << 1)
 #define SPI_CR1_MSTR               (1UL << 2)
 #define SPI_CR1_BR_DIV16           (3UL << 3)
+#define SPI_CR1_BR_DIV64           (5UL << 3)
+#define SPI_CR1_BR_DIV256          (7UL << 3)
 #define SPI_CR1_SPE                (1UL << 6)
 #define SPI_CR1_SSI                (1UL << 8)
 #define SPI_CR1_SSM                (1UL << 9)
@@ -78,6 +87,8 @@
 #define LORA_SYNC_WORD_PRIVATE     0x12U
 #define LORA_RX_MAX_PAYLOAD        255U
 #define LORA_TX_TIMEOUT_MS         2200U
+#define RADIO_PROFILE_PREFERRED    0U
+#define RADIO_USE_TCXO             0U
 
 #define PIN_NONE                   0xFFU
 
@@ -111,6 +122,11 @@ typedef struct {
 } RCC_TypeDef;
 
 typedef struct {
+    volatile uint32_t EVCR;
+    volatile uint32_t MAPR;
+} AFIO_TypeDef;
+
+typedef struct {
     volatile uint32_t CR1;
     volatile uint32_t CR2;
     volatile uint32_t SR;
@@ -137,6 +153,8 @@ typedef struct {
     uint8_t rf_tx_pin;
     GPIO_TypeDef *rf_rx_port;
     uint8_t rf_rx_pin;
+    GPIO_TypeDef *tcxo_port;
+    uint8_t tcxo_pin;
 } radio_profile_t;
 
 typedef enum {
@@ -147,20 +165,103 @@ typedef enum {
 
 #define GPIOA ((GPIO_TypeDef *)GPIOA_BASE)
 #define GPIOB ((GPIO_TypeDef *)GPIOB_BASE)
+#define GPIOC ((GPIO_TypeDef *)GPIOC_BASE)
 #define RCC   ((RCC_TypeDef *)RCC_BASE)
+#define AFIO  ((AFIO_TypeDef *)AFIO_BASE)
 #define SPI1  ((SPI_TypeDef *)SPI1_BASE)
 
 static const radio_profile_t s_profiles[] = {
-    /* Common SPI1 remap: PB3/PB4/PB5 + NSS on PA15 */
-    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 15U, GPIOA, 12U, GPIOB, 9U, GPIOB, 8U},
-    /* Same bus, NSS on PA4 */
-    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 4U, GPIOA, 12U, GPIOB, 9U, GPIOB, 8U},
-    /* Alternate SPI1 pins on port A */
-    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOA, 4U, GPIOA, 12U, GPIOB, 9U, GPIOB, 8U},
-    /* Alternate SPI1 pins on port A with NSS on PA15 */
-    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOA, 15U, GPIOA, 12U, GPIOB, 9U, GPIOB, 8U},
-    /* Same as profile 0 but reset moved to PA11 */
-    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 15U, GPIOA, 11U, GPIOB, 9U, GPIOB, 8U},
+    /*
+     * High-priority profiles inferred from W_BASE V2 REVC schematic:
+     * SPI1_CLK->PA5, SPI1_MISO->PA6, SPI1_MOSI->PA7, SPI1_CS->PB0
+     * RFSwitch_TX->PA4, RFSwitch_RX likely on PC13, SX1272_RST likely on PA2/PA1.
+     */
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOB, 0U, GPIOA, 2U, GPIOA, 4U, GPIOC, 13U, NULL, PIN_NONE},
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOB, 0U, GPIOA, 1U, GPIOA, 4U, GPIOC, 13U, NULL, PIN_NONE},
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOB, 0U, NULL, PIN_NONE, GPIOA, 4U, GPIOC, 13U, NULL, PIN_NONE},
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOB, 0U, GPIOA, 2U, GPIOA, 4U, NULL, PIN_NONE, NULL, PIN_NONE},
+    {GPIOA, 5U, GPIOA, 7U, GPIOA, 6U, GPIOB, 0U, GPIOA, 2U, GPIOA, 4U, GPIOC, 13U, NULL, PIN_NONE},
+    {GPIOA, 5U, GPIOA, 7U, GPIOA, 6U, GPIOB, 0U, NULL, PIN_NONE, GPIOA, 4U, GPIOC, 13U, NULL, PIN_NONE},
+
+    /*
+     * Alternate hypothesis:
+     * SPI1_CLK->PB8, SPI1_MISO->PB7, SPI1_MOSI->PB6, SPI1_CS->PB5,
+     * RFSwitch_TX->PB9, RFSwitch_RX->PB4
+     */
+    {GPIOB, 8U, GPIOB, 7U, GPIOB, 6U, GPIOB, 5U, GPIOA, 12U, GPIOB, 9U, GPIOB, 4U, GPIOB, 0U},
+    {GPIOB, 8U, GPIOB, 7U, GPIOB, 6U, GPIOB, 5U, GPIOA, 11U, GPIOB, 9U, GPIOB, 4U, GPIOB, 0U},
+    {GPIOB, 8U, GPIOB, 7U, GPIOB, 6U, GPIOB, 5U, NULL, PIN_NONE, GPIOB, 9U, GPIOB, 4U, GPIOB, 0U},
+    {GPIOB, 8U, GPIOB, 6U, GPIOB, 7U, GPIOB, 5U, GPIOA, 12U, GPIOB, 9U, GPIOB, 4U, GPIOB, 0U},
+    {GPIOB, 8U, GPIOB, 6U, GPIOB, 7U, GPIOB, 5U, GPIOA, 11U, GPIOB, 9U, GPIOB, 4U, GPIOB, 0U},
+    {GPIOB, 8U, GPIOB, 6U, GPIOB, 7U, GPIOB, 5U, NULL, PIN_NONE, GPIOB, 9U, GPIOB, 4U, GPIOB, 0U},
+
+    {GPIOB, 7U, GPIOB, 6U, GPIOB, 5U, GPIOB, 4U, GPIOA, 12U, GPIOB, 9U, GPIOB, 8U, GPIOB, 0U},
+    {GPIOB, 7U, GPIOB, 6U, GPIOB, 5U, GPIOB, 4U, GPIOA, 11U, GPIOB, 9U, GPIOB, 8U, GPIOB, 0U},
+    {GPIOB, 7U, GPIOB, 6U, GPIOB, 5U, GPIOB, 4U, NULL, PIN_NONE, GPIOB, 9U, GPIOB, 8U, GPIOB, 0U},
+    {GPIOB, 7U, GPIOB, 5U, GPIOB, 6U, GPIOB, 4U, GPIOA, 12U, GPIOB, 9U, GPIOB, 8U, GPIOB, 0U},
+    {GPIOB, 7U, GPIOB, 5U, GPIOB, 6U, GPIOB, 4U, GPIOA, 11U, GPIOB, 9U, GPIOB, 8U, GPIOB, 0U},
+    {GPIOB, 7U, GPIOB, 5U, GPIOB, 6U, GPIOB, 4U, NULL, PIN_NONE, GPIOB, 9U, GPIOB, 8U, GPIOB, 0U},
+
+    /* SPI=PB3/4/5, NSS=PA15 */
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 15U, GPIOA, 12U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 15U, GPIOA, 11U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 15U, NULL, PIN_NONE, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+
+    /* SPI=PB3/4/5, NSS=PA4 */
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 4U, GPIOA, 12U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 4U, GPIOA, 11U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 4U, NULL, PIN_NONE, NULL, PIN_NONE, NULL, PIN_NONE},
+
+    /* SPI=PA5/6/7, NSS=PA4 */
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOA, 4U, GPIOA, 12U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOA, 4U, GPIOA, 11U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOA, 4U, NULL, PIN_NONE, NULL, PIN_NONE, NULL, PIN_NONE},
+
+    /* SPI=PA5/6/7, NSS=PA15 */
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOA, 15U, GPIOA, 12U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOA, 15U, GPIOA, 11U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOA, 5U, GPIOA, 6U, GPIOA, 7U, GPIOA, 15U, NULL, PIN_NONE, NULL, PIN_NONE, NULL, PIN_NONE},
+
+    /* SPI=PB3/4/5 with MISO/MOSI swapped, NSS=PA15 */
+    {GPIOB, 3U, GPIOB, 5U, GPIOB, 4U, GPIOA, 15U, GPIOA, 12U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 5U, GPIOB, 4U, GPIOA, 15U, GPIOA, 11U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 5U, GPIOB, 4U, GPIOA, 15U, NULL, PIN_NONE, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+
+    /* SPI=PB3/4/5 with MISO/MOSI swapped, NSS=PA4 */
+    {GPIOB, 3U, GPIOB, 5U, GPIOB, 4U, GPIOA, 4U, GPIOA, 12U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 5U, GPIOB, 4U, GPIOA, 4U, GPIOA, 11U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 5U, GPIOB, 4U, GPIOA, 4U, NULL, PIN_NONE, NULL, PIN_NONE, NULL, PIN_NONE},
+
+    /* SPI=PA5/6/7 with MISO/MOSI swapped, NSS=PA4 */
+    {GPIOA, 5U, GPIOA, 7U, GPIOA, 6U, GPIOA, 4U, GPIOA, 12U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOA, 5U, GPIOA, 7U, GPIOA, 6U, GPIOA, 4U, GPIOA, 11U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOA, 5U, GPIOA, 7U, GPIOA, 6U, GPIOA, 4U, NULL, PIN_NONE, NULL, PIN_NONE, NULL, PIN_NONE},
+
+    /* SPI=PA5/6/7 with MISO/MOSI swapped, NSS=PA15 */
+    {GPIOA, 5U, GPIOA, 7U, GPIOA, 6U, GPIOA, 15U, GPIOA, 12U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOA, 5U, GPIOA, 7U, GPIOA, 6U, GPIOA, 15U, GPIOA, 11U, NULL, PIN_NONE, NULL, PIN_NONE, GPIOB, 0U},
+    {GPIOA, 5U, GPIOA, 7U, GPIOA, 6U, GPIOA, 15U, NULL, PIN_NONE, NULL, PIN_NONE, NULL, PIN_NONE},
+
+    /* Extra brute-force on active bus SPI=PB3/4/5 */
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 0U, GPIOA, 12U, GPIOA, 4U, GPIOA, 5U, NULL, PIN_NONE},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 0U, GPIOA, 11U, GPIOA, 4U, GPIOA, 5U, NULL, PIN_NONE},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 0U, NULL, PIN_NONE, GPIOA, 4U, GPIOA, 5U, NULL, PIN_NONE},
+
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 1U, GPIOA, 12U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 1U, GPIOA, 11U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 1U, NULL, PIN_NONE, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 6U, GPIOA, 12U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 6U, GPIOA, 11U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 6U, NULL, PIN_NONE, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 7U, GPIOA, 12U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 7U, GPIOA, 11U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOB, 7U, NULL, PIN_NONE, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 8U, GPIOA, 12U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 8U, GPIOA, 11U, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
+    {GPIOB, 3U, GPIOB, 4U, GPIOB, 5U, GPIOA, 8U, NULL, PIN_NONE, GPIOA, 4U, GPIOA, 5U, GPIOB, 0U},
 };
 
 static uint32_t s_now_ms = 0U;
@@ -169,10 +270,27 @@ static platform_radio_rx_cb_t s_rx_cb = NULL;
 static const radio_profile_t *s_profile = NULL;
 static uint8_t s_profile_index = 0xFFU;
 static uint8_t s_radio_version = 0U;
+static uint8_t s_probe_count = 0U;
+static uint8_t s_probe_profile[128U];
+static uint8_t s_probe_version[128U];
+static uint8_t s_probe_af[128U];
 static radio_state_t s_radio_state = RADIO_STATE_OFF;
 static uint32_t s_tx_start_ms = 0U;
 static uint8_t s_rx_buffer[LORA_RX_MAX_PAYLOAD];
 static bool s_led2_enabled = true;
+static bool s_spi_cpol = false;
+static bool s_spi_cpha = false;
+static uint32_t s_spi_half_cycles = 10UL;
+
+static void gpio_config_output(GPIO_TypeDef *gpio, uint8_t pin);
+static void gpio_write(GPIO_TypeDef *gpio, uint8_t pin, bool high);
+
+static void debug_port_enable_swd_only(void)
+{
+    /* Free PB3/PB4 by disabling JTAG while keeping SWD active. */
+    RCC->APB2ENR |= RCC_APB2ENR_AFIOEN;
+    AFIO->MAPR = (AFIO->MAPR & ~AFIO_MAPR_SWJ_CFG_MASK) | AFIO_MAPR_SWJ_CFG_JTAGDISABLE;
+}
 
 static void delay_cycles(volatile uint32_t cycles)
 {
@@ -192,6 +310,13 @@ static void gpio_config_output(GPIO_TypeDef *gpio, uint8_t pin)
     gpio->MODER = (gpio->MODER & ~(3UL << shift)) | (1UL << shift);
     gpio->OTYPER &= ~pin_mask(pin);
     gpio->OSPEEDR = (gpio->OSPEEDR & ~(3UL << shift)) | (2UL << shift);
+    gpio->PUPDR &= ~(3UL << shift);
+}
+
+static void gpio_config_input(GPIO_TypeDef *gpio, uint8_t pin)
+{
+    uint32_t shift = (uint32_t)pin * 2UL;
+    gpio->MODER &= ~(3UL << shift);
     gpio->PUPDR &= ~(3UL << shift);
 }
 
@@ -217,23 +342,70 @@ static void gpio_write(GPIO_TypeDef *gpio, uint8_t pin, bool high)
     }
 }
 
+static bool gpio_read(GPIO_TypeDef *gpio, uint8_t pin)
+{
+    return ((gpio->IDR & pin_mask(pin)) != 0UL);
+}
+
+static void spi1_init_cfg(uint32_t br, bool cpol, bool cpha);
+
 static void spi1_init(void)
 {
-    RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
-    SPI1->CR1 = 0U;
-    SPI1->CR2 = 0U;
-    SPI1->CR1 = SPI_CR1_MSTR | SPI_CR1_BR_DIV16 | SPI_CR1_SSM | SPI_CR1_SSI;
-    SPI1->CR1 |= SPI_CR1_SPE;
+    spi1_init_cfg(SPI_CR1_BR_DIV16, false, false);
+}
+
+static void spi1_init_cfg(uint32_t br, bool cpol, bool cpha)
+{
+    s_spi_cpol = cpol;
+    s_spi_cpha = cpha;
+
+    if (br == SPI_CR1_BR_DIV256) {
+        s_spi_half_cycles = 24UL;
+    } else if (br == SPI_CR1_BR_DIV64) {
+        s_spi_half_cycles = 12UL;
+    } else {
+        s_spi_half_cycles = 8UL;
+    }
+
+    if (s_profile != NULL) {
+        gpio_write(s_profile->sck_port, s_profile->sck_pin, s_spi_cpol);
+    }
 }
 
 static uint8_t spi1_xfer(uint8_t out)
 {
-    while ((SPI1->SR & SPI_SR_TXE) == 0UL) {
+    uint8_t in = 0U;
+    uint8_t bit;
+    bool active = !s_spi_cpol;
+
+    for (bit = 0U; bit < 8U; bit++) {
+        bool out_bit = ((out & 0x80U) != 0U);
+        out <<= 1;
+        in <<= 1;
+
+        if (!s_spi_cpha) {
+            gpio_write(s_profile->mosi_port, s_profile->mosi_pin, out_bit);
+            delay_cycles(s_spi_half_cycles);
+            gpio_write(s_profile->sck_port, s_profile->sck_pin, active);
+            delay_cycles(s_spi_half_cycles);
+            if (gpio_read(s_profile->miso_port, s_profile->miso_pin)) {
+                in |= 1U;
+            }
+            gpio_write(s_profile->sck_port, s_profile->sck_pin, !active);
+        } else {
+            gpio_write(s_profile->sck_port, s_profile->sck_pin, active);
+            delay_cycles(s_spi_half_cycles);
+            gpio_write(s_profile->mosi_port, s_profile->mosi_pin, out_bit);
+            delay_cycles(s_spi_half_cycles);
+            gpio_write(s_profile->sck_port, s_profile->sck_pin, !active);
+            if (gpio_read(s_profile->miso_port, s_profile->miso_pin)) {
+                in |= 1U;
+            }
+        }
+        delay_cycles(s_spi_half_cycles);
     }
-    *(volatile uint8_t *)&SPI1->DR = out;
-    while ((SPI1->SR & SPI_SR_RXNE) == 0UL) {
-    }
-    return *(volatile uint8_t *)&SPI1->DR;
+
+    return in;
 }
 
 static void radio_nss(bool high)
@@ -247,8 +419,10 @@ static void radio_nss(bool high)
 static void radio_write_reg(uint8_t addr, uint8_t value)
 {
     radio_nss(false);
+    delay_cycles(40UL);
     (void)spi1_xfer((uint8_t)(addr | 0x80U));
     (void)spi1_xfer(value);
+    delay_cycles(40UL);
     radio_nss(true);
 }
 
@@ -256,10 +430,28 @@ static uint8_t radio_read_reg(uint8_t addr)
 {
     uint8_t value;
     radio_nss(false);
+    delay_cycles(40UL);
     (void)spi1_xfer((uint8_t)(addr & 0x7FU));
     value = spi1_xfer(0x00U);
+    delay_cycles(40UL);
     radio_nss(true);
     return value;
+}
+
+static bool radio_rw_check(void)
+{
+    uint8_t old_mode;
+    uint8_t test_mode;
+    uint8_t read_back;
+
+    old_mode = radio_read_reg(SX127X_REG_OPMODE);
+    test_mode = (uint8_t)((old_mode ^ 0x01U) | SX127X_OPMODE_LONG_RANGE);
+
+    radio_write_reg(SX127X_REG_OPMODE, test_mode);
+    read_back = radio_read_reg(SX127X_REG_OPMODE);
+    radio_write_reg(SX127X_REG_OPMODE, old_mode);
+
+    return (read_back == test_mode);
 }
 
 static void radio_read_fifo(uint8_t *buffer, uint8_t len)
@@ -300,50 +492,69 @@ static void radio_set_rf_switch(bool tx_on)
      * - TX: CTRL1=0, CTRL2=1
      * - RX: CTRL1=1, CTRL2=1
      */
-    if (s_profile->rf_tx_pin != PIN_NONE) {
+    if ((s_profile->rf_tx_port != NULL) && (s_profile->rf_tx_pin != PIN_NONE)) {
         gpio_write(s_profile->rf_tx_port, s_profile->rf_tx_pin, !tx_on);
     }
-    if (s_profile->rf_rx_pin != PIN_NONE) {
+    if ((s_profile->rf_rx_port != NULL) && (s_profile->rf_rx_pin != PIN_NONE)) {
         gpio_write(s_profile->rf_rx_port, s_profile->rf_rx_pin, true);
+    }
+}
+
+static void radio_init_rf_switch_pins(const radio_profile_t *profile)
+{
+    if (profile == NULL) {
+        return;
+    }
+
+    if ((profile->rf_tx_port != NULL) && (profile->rf_tx_pin != PIN_NONE)) {
+        gpio_config_output(profile->rf_tx_port, profile->rf_tx_pin);
+        gpio_write(profile->rf_tx_port, profile->rf_tx_pin, false);
+    }
+
+    if ((profile->rf_rx_port != NULL) && (profile->rf_rx_pin != PIN_NONE)) {
+        gpio_config_output(profile->rf_rx_port, profile->rf_rx_pin);
+        gpio_write(profile->rf_rx_port, profile->rf_rx_pin, false);
     }
 }
 
 static void radio_reset(void)
 {
-    if ((s_profile == NULL) || (s_profile->rst_pin == PIN_NONE)) {
+    if ((s_profile == NULL) || (s_profile->rst_port == NULL) || (s_profile->rst_pin == PIN_NONE)) {
         return;
     }
+
+    /* SX127x reset is released by Hi-Z, not by actively driving high. */
+    gpio_config_output(s_profile->rst_port, s_profile->rst_pin);
     gpio_write(s_profile->rst_port, s_profile->rst_pin, false);
     delay_cycles(24000UL);
-    gpio_write(s_profile->rst_port, s_profile->rst_pin, true);
-    delay_cycles(80000UL);
+    gpio_config_input(s_profile->rst_port, s_profile->rst_pin);
+    delay_cycles(120000UL);
 }
 
-static void radio_apply_profile(const radio_profile_t *profile)
+static void radio_apply_profile(const radio_profile_t *profile, uint8_t spi_af)
 {
+    (void)spi_af;
     s_profile = profile;
-    RCC->AHBENR |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN;
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN | RCC_AHBENR_GPIOCEN;
 
-    gpio_config_af(profile->sck_port, profile->sck_pin, GPIO_AF_SPI1);
-    gpio_config_af(profile->miso_port, profile->miso_pin, GPIO_AF_SPI1);
-    gpio_config_af(profile->mosi_port, profile->mosi_pin, GPIO_AF_SPI1);
+    gpio_config_output(profile->sck_port, profile->sck_pin);
+    gpio_config_input(profile->miso_port, profile->miso_pin);
+    gpio_config_output(profile->mosi_port, profile->mosi_pin);
+    gpio_write(profile->sck_port, profile->sck_pin, s_spi_cpol);
+    gpio_write(profile->mosi_port, profile->mosi_pin, false);
 
     gpio_config_output(profile->nss_port, profile->nss_pin);
     gpio_write(profile->nss_port, profile->nss_pin, true);
 
     if (profile->rst_pin != PIN_NONE) {
-        gpio_config_output(profile->rst_port, profile->rst_pin);
-        gpio_write(profile->rst_port, profile->rst_pin, true);
+        gpio_config_input(profile->rst_port, profile->rst_pin);
     }
 
-    if (profile->rf_tx_pin != PIN_NONE) {
-        gpio_config_output(profile->rf_tx_port, profile->rf_tx_pin);
-        gpio_write(profile->rf_tx_port, profile->rf_tx_pin, false);
-    }
-
-    if (profile->rf_rx_pin != PIN_NONE) {
-        gpio_config_output(profile->rf_rx_port, profile->rf_rx_pin);
-        gpio_write(profile->rf_rx_port, profile->rf_rx_pin, false);
+    if ((RADIO_USE_TCXO != 0U) && (profile->tcxo_port != NULL) && (profile->tcxo_pin != PIN_NONE)) {
+        gpio_config_output(profile->tcxo_port, profile->tcxo_pin);
+        gpio_write(profile->tcxo_port, profile->tcxo_pin, true);
+        /* Let TCXO settle before probing version register. */
+        delay_cycles(120000UL);
     }
 
     spi1_init();
@@ -351,24 +562,86 @@ static void radio_apply_profile(const radio_profile_t *profile)
 
 static bool radio_detect(void)
 {
+    typedef struct {
+        uint32_t br;
+        bool cpol;
+        bool cpha;
+    } spi_probe_cfg_t;
+
+    static const spi_probe_cfg_t spi_cfgs[] = {
+        {SPI_CR1_BR_DIV64, false, false},
+        {SPI_CR1_BR_DIV256, false, false},
+        {SPI_CR1_BR_DIV64, true, true},
+        {SPI_CR1_BR_DIV256, true, true},
+    };
+
     uint8_t idx;
+    uint8_t scan;
+    uint8_t spi_idx;
+    uint8_t attempt;
     uint8_t version;
+    uint8_t best_version;
+    uint8_t valid_hits;
+    uint8_t profile_count = (uint8_t)(sizeof(s_profiles) / sizeof(s_profiles[0]));
 
     s_profile = NULL;
     s_profile_index = 0xFFU;
     s_radio_version = 0U;
+    s_probe_count = 0U;
 
-    for (idx = 0U; idx < (uint8_t)(sizeof(s_profiles) / sizeof(s_profiles[0])); idx++) {
-        radio_apply_profile(&s_profiles[idx]);
-        radio_reset();
+    if (profile_count > (uint8_t)sizeof(s_probe_profile)) {
+        profile_count = (uint8_t)sizeof(s_probe_profile);
+    }
 
-        version = radio_read_reg(SX127X_REG_VERSION);
-        if ((version != SX127X_VERSION_SX1272) && (version != SX127X_VERSION_SX1276)) {
-            delay_cycles(5000UL);
-            version = radio_read_reg(SX127X_REG_VERSION);
+    for (scan = 0U; scan < profile_count; scan++) {
+        idx = (uint8_t)((scan + RADIO_PROFILE_PREFERRED) % profile_count);
+
+        radio_apply_profile(&s_profiles[idx], 0U);
+        best_version = 0x00U;
+        valid_hits = 0U;
+
+        for (spi_idx = 0U; spi_idx < (uint8_t)(sizeof(spi_cfgs) / sizeof(spi_cfgs[0])); spi_idx++) {
+            for (attempt = 0U; attempt < 8U; attempt++) {
+                spi1_init_cfg(spi_cfgs[spi_idx].br, spi_cfgs[spi_idx].cpol, spi_cfgs[spi_idx].cpha);
+                version = radio_read_reg(SX127X_REG_VERSION);
+                if ((version == SX127X_VERSION_SX1272) || (version == SX127X_VERSION_SX1276)) {
+                    valid_hits++;
+                    best_version = version;
+                } else {
+                    valid_hits = 0U;
+                    if (best_version == 0x00U) {
+                        best_version = version;
+                    }
+                }
+
+                if (valid_hits >= 2U) {
+                    if (!radio_rw_check()) {
+                        valid_hits = 0U;
+                        best_version = version;
+                        radio_reset();
+                        continue;
+                    }
+                    best_version = version;
+                    break;
+                }
+
+                radio_reset();
+                delay_cycles(8000UL);
+            }
+
+            if (valid_hits >= 2U) {
+                break;
+            }
         }
 
-        if ((version == SX127X_VERSION_SX1272) || (version == SX127X_VERSION_SX1276)) {
+        version = best_version;
+
+        s_probe_profile[s_probe_count] = idx;
+        s_probe_version[s_probe_count] = version;
+        s_probe_af[s_probe_count] = (valid_hits >= 2U) ? (uint8_t)spi_idx : 0xFFU;
+        s_probe_count++;
+
+        if (valid_hits >= 2U) {
             s_profile_index = idx;
             s_radio_version = version;
             s_led2_enabled = !((s_profiles[idx].sck_port == GPIOB) && (s_profiles[idx].sck_pin == 3U));
@@ -491,10 +764,12 @@ bool platform_radio_init(platform_radio_rx_cb_t cb)
     s_rx_cb = cb;
     s_radio_state = RADIO_STATE_OFF;
 
+    debug_port_enable_swd_only();
     if (!radio_detect()) {
         return false;
     }
 
+    radio_init_rf_switch_pins(s_profile);
     radio_configure_lora();
     radio_start_rx_continuous();
     return true;
@@ -577,6 +852,35 @@ uint8_t platform_radio_version(void)
 uint8_t platform_radio_profile(void)
 {
     return s_profile_index;
+}
+
+uint8_t platform_radio_probe_count(void)
+{
+    return s_probe_count;
+}
+
+uint8_t platform_radio_probe_profile(uint8_t idx)
+{
+    if (idx >= s_probe_count) {
+        return 0xFFU;
+    }
+    return s_probe_profile[idx];
+}
+
+uint8_t platform_radio_probe_version(uint8_t idx)
+{
+    if (idx >= s_probe_count) {
+        return 0x00U;
+    }
+    return s_probe_version[idx];
+}
+
+uint8_t platform_radio_probe_af(uint8_t idx)
+{
+    if (idx >= s_probe_count) {
+        return 0xFFU;
+    }
+    return s_probe_af[idx];
 }
 
 void platform_led_set(led_state_t state)

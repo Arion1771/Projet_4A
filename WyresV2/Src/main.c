@@ -84,10 +84,17 @@ typedef struct {
 #define USART_SR_TXE        (1UL << 7)
 #define USART_SR_TC         (1UL << 6)
 
-#define APP_PING_PERIOD_MS  3000U
+#define APP_ENABLE_PERIODIC_WYRES_PING  0U
+#define APP_PING_PERIOD_MS              3000U
+#define APP_TX_GUARD_AFTER_RX_MS        1500U
+#define APP_PONG_DELAY_MS               120U
 
 static volatile uint32_t s_rx_count = 0U;
 static volatile uint32_t s_tx_count = 0U;
+static volatile uint32_t s_last_rx_ms = 0U;
+static volatile uint8_t s_pong_pending = 0U;
+static volatile uint32_t s_pong_due_ms = 0U;
+static const uint8_t s_pong_msg[] = "WYRES_PONG";
 
 static void delay_cycles(volatile uint32_t cycles)
 {
@@ -259,11 +266,17 @@ static bool payload_starts_with(const uint8_t *data, uint16_t len, const char *p
 
 static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr)
 {
-    static const uint8_t pong_msg[] = "WYRES_PONG";
-    bool pong_ok;
+    bool known_frame;
 
     (void)from;
+
+    known_frame = payload_starts_with(data, len, "LORA_") || payload_starts_with(data, len, "WYRES_");
+    if (!known_frame) {
+        return;
+    }
+
     s_rx_count++;
+    s_last_rx_ms = platform_millis();
 
     uart1_write_str("RX #");
     uart1_write_u32(s_rx_count);
@@ -278,13 +291,9 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
     uart1_write_str("\"\r\n");
 
     if (payload_starts_with(data, len, "LORA_PING")) {
-        pong_ok = platform_radio_send(LINK_SUCCESSOR, pong_msg, (uint16_t)(sizeof(pong_msg) - 1U));
-        if (pong_ok) {
-            s_tx_count++;
-            uart1_write_str("TX: WYRES_PONG\r\n");
-        } else {
-            uart1_write_str("TX: WYRES_PONG FAIL\r\n");
-        }
+        s_pong_pending = 1U;
+        s_pong_due_ms = platform_millis() + APP_PONG_DELAY_MS;
+        uart1_write_str("TXQ: WYRES_PONG\r\n");
     }
 }
 
@@ -312,7 +321,6 @@ int main(void)
 
     RCC->AHBENR |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN;
     gpio_set_output(GPIOA, 0U);
-    gpio_set_output(GPIOB, 3U);
     led_write(0U);
 
     for (i = 0U; i < 3U; i++) {
@@ -332,16 +340,48 @@ int main(void)
         uart1_write_u32((uint32_t)platform_radio_version());
         uart1_write_str(" profile=");
         uart1_write_u32((uint32_t)platform_radio_profile());
+        if ((platform_radio_version() != 0x12U) && (platform_radio_version() != 0x22U)) {
+            uart1_write_str(" (fallback)");
+        }
         uart1_write_str("\r\n");
     } else {
-        uart1_write_str("RADIO INIT FAIL (check pin mapping)\r\n");
+        uint8_t probe_i;
+        uint8_t probe_n = platform_radio_probe_count();
+        uart1_write_str("RADIO INIT FAIL (check SPI/NSS/RESET + TCXO power pin)\r\n");
+        uart1_write_str("Probe results: ");
+        uart1_write_u32((uint32_t)probe_n);
+        uart1_write_str(" profiles\r\n");
+        for (probe_i = 0U; probe_i < probe_n; probe_i++) {
+            uart1_write_str("  p=");
+            uart1_write_u32((uint32_t)platform_radio_probe_profile(probe_i));
+            uart1_write_str(" af=");
+            uart1_write_u32((uint32_t)platform_radio_probe_af(probe_i));
+            uart1_write_str(" ver=0x");
+            uart1_write_char("0123456789ABCDEF"[(platform_radio_probe_version(probe_i) >> 4) & 0x0FU]);
+            uart1_write_char("0123456789ABCDEF"[platform_radio_probe_version(probe_i) & 0x0FU]);
+            uart1_write_str("\r\n");
+        }
     }
 
     while (1) {
         platform_port_set_time_ms(now_ms);
         platform_radio_process();
 
-        if (radio_ok && ((now_ms - last_ping_ms) >= APP_PING_PERIOD_MS)) {
+        if ((radio_ok) && (s_pong_pending != 0U) && ((int32_t)(now_ms - s_pong_due_ms) >= 0)) {
+            send_ok = platform_radio_send(LINK_SUCCESSOR, s_pong_msg, (uint16_t)(sizeof(s_pong_msg) - 1U));
+            if (send_ok) {
+                s_pong_pending = 0U;
+                s_tx_count++;
+                uart1_write_str("TX: WYRES_PONG\r\n");
+            } else {
+                s_pong_due_ms = now_ms + 80U;
+            }
+        }
+
+        if ((radio_ok) &&
+            (APP_ENABLE_PERIODIC_WYRES_PING != 0U) &&
+            ((now_ms - last_ping_ms) >= APP_PING_PERIOD_MS) &&
+            ((now_ms - s_last_rx_ms) >= APP_TX_GUARD_AFTER_RX_MS)) {
             send_ok = platform_radio_send(LINK_SUCCESSOR, ping_msg, (uint16_t)(sizeof(ping_msg) - 1U));
             if (send_ok) {
                 s_tx_count++;
