@@ -13,6 +13,7 @@
 /* Includes */
 #include <errno.h>
 #include <stdint.h>
+#include <stddef.h>
 
 /* Pointer to the current high watermark of the heap usage */
 static uint8_t *__sbrk_heap_end = NULL;

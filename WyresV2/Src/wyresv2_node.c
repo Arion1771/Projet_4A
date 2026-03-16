@@ -2,300 +2,231 @@
 
 #include <string.h>
 
-enum {
-    FRAME_VERSION = 1,
-    FRAME_FLAG_ACK_REQUIRED = 0x01,
-    RETRANSMIT_TIMEOUT_MS = 600,
-    RETRANSMIT_MAX_ATTEMPTS = 3,
-    HEARTBEAT_PERIOD_MS = 1500,
-    HEARTBEAT_TIMEOUT_MS = 5000,
-    DEFAULT_TTL = 16
-};
+#define WYRESV2_PROTO_VERSION        1U
+#define WYRESV2_SEQ_START            1U
+#define WYRESV2_UNKNOWN_NODE_ID      0xFFFFU
+#define WYRESV2_BOOTING_MS           600U
+#define WYRESV2_DISCOVERY_MS         3000U
+#define WYRESV2_HEARTBEAT_MS         2000U
+#define WYRESV2_DEFAULT_TTL          8U
 
-typedef struct {
-    bool used;
-    wyresv2_frame_t frame;
-    link_direction_t dir;
-    uint32_t next_retry_ms;
-    uint8_t retries;
-    bool high_priority;
-} pending_entry_t;
-
-static pending_entry_t s_pending[WYRESV2_MAX_PENDING];
-
-static link_direction_t opposite_dir(link_direction_t d)
+static void wyresv2_apply_state_led(wyresv2_state_t state)
 {
-    return (d == LINK_PREDECESSOR) ? LINK_SUCCESSOR : LINK_PREDECESSOR;
-}
-
-static bool send_frame(link_direction_t dir, const wyresv2_frame_t *f)
-{
-    return platform_radio_send(dir, (const uint8_t *)f, (uint16_t)(sizeof(*f) - WYRESV2_MAX_PAYLOAD + f->payload_len));
-}
-
-static void set_led_for_state(wyresv2_state_t state)
-{
-    if (state == NODE_OFF) {
+    switch (state) {
+    case NODE_OFF:
         platform_led_set(LED_OFF);
-    } else if (state == NODE_INSERTED) {
-        platform_led_set(LED_INSERTED);
-    } else if (state == NODE_ALERT_ACTIVE) {
-        platform_led_set(LED_ALERT);
-    } else {
+        break;
+    case NODE_BOOTING:
+    case NODE_DISCOVERING:
         platform_led_set(LED_NEUTRAL);
+        break;
+    case NODE_INSERTED:
+        platform_led_set(LED_INSERTED);
+        break;
+    case NODE_ALERT_ACTIVE:
+    default:
+        platform_led_set(LED_ALERT);
+        break;
     }
 }
 
-static bool queue_pending(const wyresv2_frame_t *frame, link_direction_t dir, uint32_t now_ms, bool high_priority)
+static void wyresv2_set_state(wyresv2_ctx_t *ctx, wyresv2_state_t state)
 {
-    uint32_t i;
-    for (i = 0; i < WYRESV2_MAX_PENDING; ++i) {
-        if (!s_pending[i].used) {
-            s_pending[i].used = true;
-            s_pending[i].frame = *frame;
-            s_pending[i].dir = dir;
-            s_pending[i].next_retry_ms = now_ms + RETRANSMIT_TIMEOUT_MS;
-            s_pending[i].retries = 0;
-            s_pending[i].high_priority = high_priority;
-            return true;
-        }
+    if (ctx == NULL) {
+        return;
     }
-    return false;
+
+    ctx->state = state;
+    wyresv2_apply_state_led(state);
 }
 
-static void ack_pending(uint16_t seq)
+static uint8_t wyresv2_serialize(const wyresv2_frame_t *frame, uint8_t *out, uint8_t out_max)
 {
-    uint32_t i;
-    for (i = 0; i < WYRESV2_MAX_PENDING; ++i) {
-        if (s_pending[i].used && s_pending[i].frame.seq == seq) {
-            s_pending[i].used = false;
-            return;
-        }
+    uint8_t need;
+    uint8_t i;
+
+    if ((frame == NULL) || (out == NULL)) {
+        return 0U;
     }
+
+    if (frame->payload_len > WYRESV2_MAX_PAYLOAD) {
+        return 0U;
+    }
+
+    need = (uint8_t)(11U + frame->payload_len);
+    if (need > out_max) {
+        return 0U;
+    }
+
+    out[0] = frame->version;
+    out[1] = frame->type;
+    out[2] = (uint8_t)(frame->src_id & 0xFFU);
+    out[3] = (uint8_t)((frame->src_id >> 8) & 0xFFU);
+    out[4] = (uint8_t)(frame->dst_id & 0xFFU);
+    out[5] = (uint8_t)((frame->dst_id >> 8) & 0xFFU);
+    out[6] = (uint8_t)(frame->seq & 0xFFU);
+    out[7] = (uint8_t)((frame->seq >> 8) & 0xFFU);
+    out[8] = frame->ttl;
+    out[9] = frame->flags;
+    out[10] = frame->payload_len;
+
+    for (i = 0U; i < frame->payload_len; i++) {
+        out[11U + i] = frame->payload[i];
+    }
+
+    return need;
 }
 
-static bool send_ack(const wyresv2_ctx_t *ctx, link_direction_t to, uint16_t seq)
+static bool wyresv2_send_frame(wyresv2_ctx_t *ctx, uint8_t type, uint16_t dst_id, const uint8_t *payload, uint8_t len)
 {
-    wyresv2_frame_t ack;
-    memset(&ack, 0, sizeof(ack));
+    wyresv2_frame_t frame;
+    uint8_t raw[11U + WYRESV2_MAX_PAYLOAD];
+    uint8_t raw_len;
 
-    ack.version = FRAME_VERSION;
-    ack.type = MSG_ACK;
-    ack.src_id = ctx->node_id;
-    ack.dst_id = 0xFFFF;
-    ack.seq = seq;
-    ack.ttl = 1;
-    ack.flags = 0;
-    ack.payload_len = 0;
-
-    return send_frame(to, &ack);
-}
-
-static bool forward_with_ack(wyresv2_ctx_t *ctx, link_direction_t dir, wyresv2_frame_t *frame, bool high_priority)
-{
-    uint32_t now = platform_millis();
-
-    if (frame->ttl == 0) {
+    if ((ctx == NULL) || ((payload == NULL) && (len > 0U)) || (len > WYRESV2_MAX_PAYLOAD)) {
         return false;
     }
 
-    frame->ttl -= 1;
+    memset(&frame, 0, sizeof(frame));
+    frame.version = WYRESV2_PROTO_VERSION;
+    frame.type = type;
+    frame.src_id = ctx->node_id;
+    frame.dst_id = dst_id;
+    frame.seq = ctx->next_seq++;
+    frame.ttl = WYRESV2_DEFAULT_TTL;
+    frame.flags = 0U;
+    frame.payload_len = len;
+    if (len > 0U) {
+        memcpy(frame.payload, payload, len);
+    }
 
-    if (!send_frame(dir, frame)) {
+    raw_len = wyresv2_serialize(&frame, raw, (uint8_t)sizeof(raw));
+    if (raw_len == 0U) {
         return false;
     }
 
-    if ((frame->flags & FRAME_FLAG_ACK_REQUIRED) != 0U) {
-        if (!queue_pending(frame, dir, now, high_priority)) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-static void discover_and_join(wyresv2_ctx_t *ctx)
-{
-    wyresv2_frame_t req;
-
-    memset(&req, 0, sizeof(req));
-    req.version = FRAME_VERSION;
-    req.type = MSG_JOIN_REQ;
-    req.src_id = ctx->node_id;
-    req.dst_id = 0xFFFF;
-    req.seq = ctx->next_seq++;
-    req.ttl = 1;
-    req.flags = FRAME_FLAG_ACK_REQUIRED;
-    req.payload_len = 0;
-
-    /* Broadcast both directions in the chain to find insertion slot */
-    (void)send_frame(LINK_PREDECESSOR, &req);
-    (void)send_frame(LINK_SUCCESSOR, &req);
+    return platform_radio_send(LINK_SUCCESSOR, raw, raw_len);
 }
 
 void wyresv2_init(wyresv2_ctx_t *ctx, uint16_t node_id)
 {
+    if (ctx == NULL) {
+        return;
+    }
+
     memset(ctx, 0, sizeof(*ctx));
-    memset(s_pending, 0, sizeof(s_pending));
-
     ctx->node_id = node_id;
-    ctx->predecessor_id = 0xFFFF;
-    ctx->successor_id = 0xFFFF;
+    ctx->predecessor_id = WYRESV2_UNKNOWN_NODE_ID;
+    ctx->successor_id = WYRESV2_UNKNOWN_NODE_ID;
+    ctx->next_seq = WYRESV2_SEQ_START;
     ctx->state = NODE_OFF;
-    ctx->next_seq = 1;
-
-    set_led_for_state(ctx->state);
+    ctx->inserted = false;
+    wyresv2_apply_state_led(NODE_OFF);
 }
 
 void wyresv2_power_on(wyresv2_ctx_t *ctx)
 {
-    ctx->state = NODE_BOOTING;
-    ctx->inserted = false;
-    set_led_for_state(ctx->state);
+    if (ctx == NULL) {
+        return;
+    }
 
-    /* Transition immediately to discovery for autonomous insertion. */
-    ctx->state = NODE_DISCOVERING;
-    set_led_for_state(ctx->state);
-    discover_and_join(ctx);
+    ctx->inserted = false;
+    ctx->last_heartbeat_ms = platform_millis();
+    wyresv2_set_state(ctx, NODE_BOOTING);
 }
 
 void wyresv2_tick(wyresv2_ctx_t *ctx, uint32_t now_ms)
 {
-    uint32_t i;
+    static const uint8_t hb_payload[] = {'H', 'B'};
+    uint32_t elapsed;
 
-    if (ctx->state == NODE_OFF) {
+    if (ctx == NULL) {
         return;
     }
 
-    for (i = 0; i < WYRESV2_MAX_PENDING; ++i) {
-        if (s_pending[i].used && now_ms >= s_pending[i].next_retry_ms) {
-            if (s_pending[i].retries >= RETRANSMIT_MAX_ATTEMPTS) {
-                s_pending[i].used = false;
-                continue;
-            }
+    elapsed = now_ms - ctx->last_heartbeat_ms;
 
-            (void)send_frame(s_pending[i].dir, &s_pending[i].frame);
-            s_pending[i].retries++;
-            s_pending[i].next_retry_ms = now_ms + RETRANSMIT_TIMEOUT_MS;
+    switch (ctx->state) {
+    case NODE_OFF:
+        break;
+
+    case NODE_BOOTING:
+        if (elapsed >= WYRESV2_BOOTING_MS) {
+            ctx->last_heartbeat_ms = now_ms;
+            wyresv2_set_state(ctx, NODE_DISCOVERING);
         }
-    }
+        break;
 
-    if (ctx->inserted) {
-        if ((now_ms - ctx->last_heartbeat_ms) >= HEARTBEAT_PERIOD_MS) {
-            wyresv2_frame_t hb;
-            memset(&hb, 0, sizeof(hb));
-            hb.version = FRAME_VERSION;
-            hb.type = MSG_HEARTBEAT;
-            hb.src_id = ctx->node_id;
-            hb.dst_id = 0xFFFF;
-            hb.seq = ctx->next_seq++;
-            hb.ttl = 1;
-            hb.flags = 0;
-            hb.payload_len = 0;
-            (void)send_frame(LINK_PREDECESSOR, &hb);
-            (void)send_frame(LINK_SUCCESSOR, &hb);
+    case NODE_DISCOVERING:
+        if (elapsed >= WYRESV2_DISCOVERY_MS) {
+            ctx->inserted = true;
+            ctx->last_heartbeat_ms = now_ms;
+            wyresv2_set_state(ctx, NODE_INSERTED);
+        }
+        break;
+
+    case NODE_INSERTED:
+        if (elapsed >= WYRESV2_HEARTBEAT_MS) {
+            (void)wyresv2_send_frame(ctx, MSG_HEARTBEAT, WYRESV2_UNKNOWN_NODE_ID, hb_payload, (uint8_t)sizeof(hb_payload));
             ctx->last_heartbeat_ms = now_ms;
         }
+        break;
 
-        if ((now_ms - ctx->last_heartbeat_ms) > HEARTBEAT_TIMEOUT_MS) {
-            ctx->state = NODE_DISCOVERING;
-            ctx->inserted = false;
-            set_led_for_state(ctx->state);
-            discover_and_join(ctx);
-        }
+    case NODE_ALERT_ACTIVE:
+    default:
+        break;
     }
 }
 
 void wyresv2_on_frame(wyresv2_ctx_t *ctx, link_direction_t from, const wyresv2_frame_t *frame, int16_t rssi, int8_t snr)
 {
-    wyresv2_frame_t out;
+    if ((ctx == NULL) || (frame == NULL)) {
+        return;
+    }
 
     if (from == LINK_PREDECESSOR) {
         ctx->last_rssi_pred = rssi;
         ctx->last_snr_pred = snr;
+        ctx->predecessor_id = frame->src_id;
     } else {
         ctx->last_rssi_succ = rssi;
         ctx->last_snr_succ = snr;
+        ctx->successor_id = frame->src_id;
     }
 
-    if (frame->type == MSG_ACK) {
-        ack_pending(frame->seq);
-        return;
-    }
+    switch (frame->type) {
+    case MSG_ALERT:
+        wyresv2_set_state(ctx, NODE_ALERT_ACTIVE);
+        break;
 
-    if ((frame->flags & FRAME_FLAG_ACK_REQUIRED) != 0U) {
-        (void)send_ack(ctx, from, frame->seq);
-    }
+    case MSG_JOIN_ACK:
+    case MSG_HEARTBEAT:
+        if (ctx->state != NODE_ALERT_ACTIVE) {
+            ctx->inserted = true;
+            ctx->last_heartbeat_ms = platform_millis();
+            wyresv2_set_state(ctx, NODE_INSERTED);
+        }
+        break;
 
-    if (frame->type == MSG_JOIN_ACK) {
-        ctx->inserted = true;
-        ctx->state = NODE_INSERTED;
-        set_led_for_state(ctx->state);
-        return;
-    }
-
-    if (frame->type == MSG_ALERT) {
-        ctx->state = NODE_ALERT_ACTIVE;
-        set_led_for_state(ctx->state);
-
-        out = *frame;
-        (void)forward_with_ack(ctx, opposite_dir(from), &out, true);
-        return;
-    }
-
-    if (frame->type == MSG_TEXT || frame->type == MSG_SUPERVISION || frame->type == MSG_HEARTBEAT || frame->type == MSG_JOIN_REQ) {
-        out = *frame;
-        (void)forward_with_ack(ctx, opposite_dir(from), &out, false);
+    default:
+        break;
     }
 }
 
 bool wyresv2_send_text(wyresv2_ctx_t *ctx, uint16_t dst_id, const uint8_t *payload, uint8_t len)
 {
-    wyresv2_frame_t f;
-
-    if (len > WYRESV2_MAX_PAYLOAD) {
-        return false;
-    }
-
-    memset(&f, 0, sizeof(f));
-    f.version = FRAME_VERSION;
-    f.type = MSG_TEXT;
-    f.src_id = ctx->node_id;
-    f.dst_id = dst_id;
-    f.seq = ctx->next_seq++;
-    f.ttl = DEFAULT_TTL;
-    f.flags = FRAME_FLAG_ACK_REQUIRED;
-    f.payload_len = len;
-    if (len > 0U) {
-        memcpy(f.payload, payload, len);
-    }
-
-    return forward_with_ack(ctx, LINK_SUCCESSOR, &f, false) || forward_with_ack(ctx, LINK_PREDECESSOR, &f, false);
+    return wyresv2_send_frame(ctx, MSG_TEXT, dst_id, payload, len);
 }
 
 bool wyresv2_send_alert(wyresv2_ctx_t *ctx, uint16_t dst_id, const uint8_t *payload, uint8_t len)
 {
-    wyresv2_frame_t f;
+    bool ok;
 
-    if (len > WYRESV2_MAX_PAYLOAD) {
+    if (ctx == NULL) {
         return false;
     }
 
-    memset(&f, 0, sizeof(f));
-    f.version = FRAME_VERSION;
-    f.type = MSG_ALERT;
-    f.src_id = ctx->node_id;
-    f.dst_id = dst_id;
-    f.seq = ctx->next_seq++;
-    f.ttl = DEFAULT_TTL;
-    f.flags = FRAME_FLAG_ACK_REQUIRED;
-    f.payload_len = len;
-    if (len > 0U) {
-        memcpy(f.payload, payload, len);
-    }
-
-    ctx->state = NODE_ALERT_ACTIVE;
-    set_led_for_state(ctx->state);
-
-    return forward_with_ack(ctx, LINK_SUCCESSOR, &f, true) || forward_with_ack(ctx, LINK_PREDECESSOR, &f, true);
+    wyresv2_set_state(ctx, NODE_ALERT_ACTIVE);
+    ok = wyresv2_send_frame(ctx, MSG_ALERT, dst_id, payload, len);
+    return ok;
 }

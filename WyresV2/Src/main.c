@@ -1,278 +1,371 @@
-#include "main.h"
-#include "stm32wlxx_hal.h"
-#include "platform_port.h"
-
-#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 #include <string.h>
 
-#ifndef UART_ONE_BIT_SAMPLE_DISABLE
-#define UART_ONE_BIT_SAMPLE_DISABLE UART_ONE_BIT_SAMPLE_DISABLED
-#endif
+#include "platform_port.h"
 
-static void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_USART_UART_Init(void);
-static void OnRadioRx(link_direction_t from, const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr);
-static void BootBlink(void);
+/*
+ * WyresV2 W_BASE V2 REVC bring-up target: STM32L151CC (Cortex-M3)
+ * - LED1: PA0
+ * - LED2: PB3 (may be unavailable depending on radio pin profile)
+ * - UART debug: USART1 TX=PA9 RX=PA10
+ */
 
-static UART_HandleTypeDef huart1;
-static UART_HandleTypeDef huart2;
-static uint8_t uart1_ready = 0U;
-static uint8_t uart2_ready = 0U;
+#define PERIPH_BASE         0x40000000UL
+#define AHBPERIPH_BASE      (PERIPH_BASE + 0x00020000UL)
+#define APB2PERIPH_BASE     (PERIPH_BASE + 0x00010000UL)
 
-static void Uart_Log(const char *msg);
-static void Uart_LogText(const uint8_t *data, uint16_t size);
-static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
+#define GPIOA_BASE          (AHBPERIPH_BASE + 0x0000UL)
+#define GPIOB_BASE          (AHBPERIPH_BASE + 0x0400UL)
+#define RCC_BASE            (AHBPERIPH_BASE + 0x3800UL)
+#define USART1_BASE         (APB2PERIPH_BASE + 0x3800UL)
 
-int main(void)
+#define LED1_PIN            (1UL << 0)   /* PA0  */
+#define LED2_PIN            (1UL << 3)   /* PB3  */
+
+typedef struct {
+    volatile uint32_t MODER;
+    volatile uint32_t OTYPER;
+    volatile uint32_t OSPEEDR;
+    volatile uint32_t PUPDR;
+    volatile uint32_t IDR;
+    volatile uint32_t ODR;
+    volatile uint32_t BSRR;
+    volatile uint32_t LCKR;
+    volatile uint32_t AFR[2];
+} GPIO_TypeDef;
+
+typedef struct {
+    volatile uint32_t CR;
+    volatile uint32_t ICSCR;
+    volatile uint32_t CFGR;
+    volatile uint32_t CIR;
+    volatile uint32_t AHBRSTR;
+    volatile uint32_t APB2RSTR;
+    volatile uint32_t APB1RSTR;
+    volatile uint32_t AHBENR;
+    volatile uint32_t APB2ENR;
+    volatile uint32_t APB1ENR;
+    volatile uint32_t AHBLPENR;
+    volatile uint32_t APB2LPENR;
+    volatile uint32_t APB1LPENR;
+    volatile uint32_t CSR;
+} RCC_TypeDef;
+
+typedef struct {
+    volatile uint32_t SR;
+    volatile uint32_t DR;
+    volatile uint32_t BRR;
+    volatile uint32_t CR1;
+    volatile uint32_t CR2;
+    volatile uint32_t CR3;
+    volatile uint32_t GTPR;
+} USART_TypeDef;
+
+#define GPIOA               ((GPIO_TypeDef *)GPIOA_BASE)
+#define GPIOB               ((GPIO_TypeDef *)GPIOB_BASE)
+#define RCC                 ((RCC_TypeDef *)RCC_BASE)
+#define USART1              ((USART_TypeDef *)USART1_BASE)
+
+#define RCC_AHBENR_GPIOAEN  (1UL << 0)
+#define RCC_AHBENR_GPIOBEN  (1UL << 1)
+#define RCC_APB2ENR_USART1EN (1UL << 14)
+#define RCC_CR_HSION        (1UL << 0)
+#define RCC_CR_HSIRDY       (1UL << 1)
+#define RCC_CFGR_SW_MASK    (3UL << 0)
+#define RCC_CFGR_SW_HSI     (1UL << 0)
+#define RCC_CFGR_SWS_MASK   (3UL << 2)
+#define RCC_CFGR_SWS_HSI    (1UL << 2)
+
+#define USART_CR1_UE        (1UL << 13)
+#define USART_CR1_TE        (1UL << 3)
+#define USART_CR1_RE        (1UL << 2)
+#define USART_SR_TXE        (1UL << 7)
+#define USART_SR_TC         (1UL << 6)
+
+#define APP_PING_PERIOD_MS  3000U
+
+static volatile uint32_t s_rx_count = 0U;
+static volatile uint32_t s_tx_count = 0U;
+
+static void delay_cycles(volatile uint32_t cycles)
 {
-    uint32_t last_heartbeat_ms = 0U;
-    uint32_t last_ping_ms = 0U;
-    uint32_t ping_counter = 0U;
-    char ping_msg[40];
-    bool ping_ok;
-
-    HAL_Init();
-    MX_GPIO_Init();
-    BootBlink();
-    SystemClock_Config();
-    MX_USART_UART_Init();
-
-    Uart_Log("BOOT WYRESV2\r\n");
-
-    if (!platform_radio_init(OnRadioRx)) {
-        Uart_Log("RADIO INIT ERROR\r\n");
-        Error_Handler();
-    }
-
-    Uart_Log("RADIO INIT OK\r\n");
-
-    for (;;) {
-        if ((HAL_GetTick() - last_heartbeat_ms) >= 500U) {
-            HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-            last_heartbeat_ms = HAL_GetTick();
-            Uart_Log("WYRES ALIVE\r\n");
-        }
-
-        if ((HAL_GetTick() - last_ping_ms) >= 2000U) {
-            (void)snprintf(ping_msg, sizeof(ping_msg), "WYRES PING %lu", (unsigned long)ping_counter++);
-            ping_ok = platform_radio_send(LINK_SUCCESSOR, (const uint8_t *)ping_msg, (uint16_t)strlen(ping_msg));
-            if (ping_ok) {
-                Uart_Log("PING TX: ");
-                Uart_Log(ping_msg);
-                Uart_Log("\r\n");
-            } else {
-                Uart_Log("PING TX FAIL\r\n");
-            }
-            last_ping_ms = HAL_GetTick();
-        }
-
-        platform_radio_process();
-        HAL_Delay(2U);
+    while (cycles-- != 0UL) {
+        __asm volatile ("nop");
     }
 }
 
-static void OnRadioRx(link_direction_t from, const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr)
+static void delay_ms(uint32_t ms)
 {
-    bool relay_ok;
-    uint8_t tries;
-    char hdr[96];
-
-    (void)from;
-
-    if ((data == NULL) || (len == 0U)) {
-        Uart_Log("RX EMPTY\r\n");
-        return;
+    while (ms-- != 0UL) {
+        delay_cycles(12000UL);
     }
+}
 
-    (void)snprintf(hdr, sizeof(hdr), "RX len=%u rssi=%d snr=%d: ", (unsigned)len, (int)rssi, (int)snr);
-    Uart_Log(hdr);
-    Uart_LogText(data, len);
-    Uart_Log("\r\n");
+static void gpio_set_output(GPIO_TypeDef *gpio, uint32_t pin_index)
+{
+    const uint32_t shift = pin_index * 2UL;
+    gpio->MODER &= ~(3UL << shift);
+    gpio->MODER |= (1UL << shift);
+    gpio->OTYPER &= ~(1UL << pin_index);
+    gpio->OSPEEDR &= ~(3UL << shift);
+    gpio->PUPDR &= ~(3UL << shift);
+}
 
-    /* Visual confirmation: toggle LED on each received radio payload. */
-    HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-
-    /*
-     * Give the sender a short guard time to switch back to RX after TX_DONE.
-     * Without this, immediate relay can be transmitted too early and be missed.
-     */
-    HAL_Delay(80U);
-
-    relay_ok = false;
-    for (tries = 0U; tries < 3U; tries++) {
-        relay_ok = platform_radio_send(LINK_SUCCESSOR, data, len);
-        if (relay_ok) {
-            break;
-        }
-        HAL_Delay(20U);
-    }
-
-    if (relay_ok) {
-        Uart_Log("RELAY TX START\r\n");
+static void led_write(uint8_t on)
+{
+    if (on != 0U) {
+        GPIOA->BSRR = LED1_PIN;
+        GPIOB->BSRR = LED2_PIN;
     } else {
-        Uart_Log("RELAY TX FAIL\r\n");
+        GPIOA->BSRR = (LED1_PIN << 16);
+        GPIOB->BSRR = (LED2_PIN << 16);
     }
 }
 
-static void SystemClock_Config(void)
+static void led_toggle(void)
 {
-    RCC_OscInitTypeDef osc = {0};
-    RCC_ClkInitTypeDef clk = {0};
+    GPIOA->ODR ^= LED1_PIN;
+}
 
-    osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    osc.HSIState = RCC_HSI_ON;
-    osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    osc.PLL.PLLState = RCC_PLL_NONE;
-    if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
-        Error_Handler();
+static void system_clock_init_hsi_16mhz(void)
+{
+    RCC->CR |= RCC_CR_HSION;
+    while ((RCC->CR & RCC_CR_HSIRDY) == 0UL) {
     }
 
-    clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    clk.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-    clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    clk.APB1CLKDivider = RCC_HCLK_DIV1;
-    clk.APB2CLKDivider = RCC_HCLK_DIV1;
-    if (HAL_RCC_ClockConfig(&clk, LL_FLASH_LATENCY_0) != HAL_OK) {
-        Error_Handler();
+    RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_MASK) | RCC_CFGR_SW_HSI;
+    while ((RCC->CFGR & RCC_CFGR_SWS_MASK) != RCC_CFGR_SWS_HSI) {
     }
 }
 
-static void MX_GPIO_Init(void)
+static void uart1_init_115200(void)
 {
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    uint32_t temp;
 
-    __HAL_RCC_GPIOB_CLK_ENABLE();
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+    RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
 
-    GPIO_InitStruct.Pin = LED_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
+    /* PA9/PA10 -> AF7 */
+    temp = GPIOA->MODER;
+    temp &= ~((3UL << (9UL * 2UL)) | (3UL << (10UL * 2UL)));
+    temp |=  ((2UL << (9UL * 2UL)) | (2UL << (10UL * 2UL)));
+    GPIOA->MODER = temp;
 
-    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+    temp = GPIOA->AFR[1];
+    temp &= ~((0xFUL << ((9UL - 8UL) * 4UL)) | (0xFUL << ((10UL - 8UL) * 4UL)));
+    temp |=  ((7UL << ((9UL - 8UL) * 4UL)) | (7UL << ((10UL - 8UL) * 4UL)));
+    GPIOA->AFR[1] = temp;
+
+    GPIOA->OSPEEDR |= (3UL << (9UL * 2UL)) | (3UL << (10UL * 2UL));
+    GPIOA->PUPDR &= ~((3UL << (9UL * 2UL)) | (3UL << (10UL * 2UL)));
+    GPIOA->PUPDR |=  ((1UL << (9UL * 2UL)) | (1UL << (10UL * 2UL)));
+
+    USART1->CR1 = 0UL;
+    USART1->CR2 = 0UL;
+    USART1->CR3 = 0UL;
+    USART1->BRR = (16000000UL + (115200UL / 2UL)) / 115200UL;
+    USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
 }
 
-static void BootBlink(void)
+static void uart1_write_char(char c)
 {
-    uint8_t i;
-
-    for (i = 0U; i < 3U; i++) {
-        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-        HAL_Delay(100U);
-        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-        HAL_Delay(100U);
+    while ((USART1->SR & USART_SR_TXE) == 0UL) {
     }
+    USART1->DR = (uint32_t)(uint8_t)c;
 }
 
-static void MX_USART_UART_Init(void)
+static void uart1_write_str(const char *s)
 {
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    __HAL_RCC_USART2_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-
-    GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    huart2.Instance = USART2;
-    huart2.Init.BaudRate = 115200;
-    huart2.Init.WordLength = UART_WORDLENGTH_8B;
-    huart2.Init.StopBits = UART_STOPBITS_1;
-    huart2.Init.Parity = UART_PARITY_NONE;
-    huart2.Init.Mode = UART_MODE_TX_RX;
-    huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-    huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-    huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-    if (HAL_UART_Init(&huart2) == HAL_OK) {
-        uart2_ready = 1U;
-    }
-
-    __HAL_RCC_USART1_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-
-    GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-    huart1.Instance = USART1;
-    huart1.Init.BaudRate = 115200;
-    huart1.Init.WordLength = UART_WORDLENGTH_8B;
-    huart1.Init.StopBits = UART_STOPBITS_1;
-    huart1.Init.Parity = UART_PARITY_NONE;
-    huart1.Init.Mode = UART_MODE_TX_RX;
-    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-    huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-    huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-    if (HAL_UART_Init(&huart1) == HAL_OK) {
-        uart1_ready = 1U;
-    }
-}
-
-static void Uart_Log(const char *msg)
-{
-    if (msg == NULL) {
+    if (s == NULL) {
         return;
     }
 
-    Uart_TransmitAll((const uint8_t *)msg, (uint16_t)strlen(msg));
+    while (*s != '\0') {
+        if (*s == '\n') {
+            uart1_write_char('\r');
+        }
+        uart1_write_char(*s++);
+    }
+
+    while ((USART1->SR & USART_SR_TC) == 0UL) {
+    }
 }
 
-static void Uart_LogText(const uint8_t *data, uint16_t size)
+static void uart1_write_u32(uint32_t value)
+{
+    char buf[11];
+    uint8_t i = 0U;
+
+    if (value == 0U) {
+        uart1_write_char('0');
+        return;
+    }
+
+    while ((value > 0U) && (i < (uint8_t)sizeof(buf))) {
+        buf[i++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    }
+
+    while (i > 0U) {
+        uart1_write_char(buf[--i]);
+    }
+}
+
+static void uart1_write_i32(int32_t value)
+{
+    if (value < 0) {
+        uart1_write_char('-');
+        uart1_write_u32((uint32_t)(-value));
+    } else {
+        uart1_write_u32((uint32_t)value);
+    }
+}
+
+static void uart1_write_printable(const uint8_t *data, uint16_t len)
 {
     uint16_t i;
     uint8_t c;
 
-    for (i = 0; i < size; i++) {
+    if (data == NULL) {
+        return;
+    }
+
+    for (i = 0U; i < len; i++) {
         c = data[i];
         if ((c < 32U) || (c > 126U)) {
             c = '.';
         }
-        Uart_TransmitAll(&c, 1U);
+        uart1_write_char((char)c);
     }
 }
 
-static void Uart_TransmitAll(const uint8_t *buf, uint16_t len)
+static bool payload_starts_with(const uint8_t *data, uint16_t len, const char *prefix)
 {
-    if ((buf == NULL) || (len == 0U)) {
-        return;
+    uint16_t prefix_len;
+
+    if ((data == NULL) || (prefix == NULL)) {
+        return false;
     }
 
-    if (uart1_ready != 0U) {
-        (void)HAL_UART_Transmit(&huart1, (uint8_t *)buf, len, 100U);
+    prefix_len = (uint16_t)strlen(prefix);
+    if (len < prefix_len) {
+        return false;
     }
 
-    if (uart2_ready != 0U) {
-        (void)HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 100U);
+    return (memcmp(data, prefix, prefix_len) == 0);
+}
+
+static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr)
+{
+    static const uint8_t pong_msg[] = "WYRES_PONG";
+    bool pong_ok;
+
+    (void)from;
+    s_rx_count++;
+
+    uart1_write_str("RX #");
+    uart1_write_u32(s_rx_count);
+    uart1_write_str(" RSSI=");
+    uart1_write_i32((int32_t)rssi);
+    uart1_write_str(" SNR=");
+    uart1_write_i32((int32_t)snr);
+    uart1_write_str(" LEN=");
+    uart1_write_u32((uint32_t)len);
+    uart1_write_str(" DATA=\"");
+    uart1_write_printable(data, len);
+    uart1_write_str("\"\r\n");
+
+    if (payload_starts_with(data, len, "LORA_PING")) {
+        pong_ok = platform_radio_send(LINK_SUCCESSOR, pong_msg, (uint16_t)(sizeof(pong_msg) - 1U));
+        if (pong_ok) {
+            s_tx_count++;
+            uart1_write_str("TX: WYRES_PONG\r\n");
+        } else {
+            uart1_write_str("TX: WYRES_PONG FAIL\r\n");
+        }
     }
 }
+
+void platform_port_set_time_ms(uint32_t now_ms);
 
 void Error_Handler(void)
 {
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    volatile uint32_t d;
+    while (1) {
+        led_toggle();
+        delay_ms(150U);
+    }
+}
 
-    __HAL_RCC_GPIOB_CLK_ENABLE();
+int main(void)
+{
+    uint32_t i;
+    uint32_t now_ms = 0U;
+    uint32_t last_status_ms = 0U;
+    uint32_t last_ping_ms = 0U;
+    bool radio_ok;
+    bool send_ok;
+    static const uint8_t ping_msg[] = "WYRES_PING";
 
-    GPIO_InitStruct.Pin = LED_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
+    system_clock_init_hsi_16mhz();
+
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN;
+    gpio_set_output(GPIOA, 0U);
+    gpio_set_output(GPIOB, 3U);
+    led_write(0U);
+
+    for (i = 0U; i < 3U; i++) {
+        led_write(1U);
+        delay_ms(120U);
+        led_write(0U);
+        delay_ms(120U);
+    }
+
+    uart1_init_115200();
+    uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
+    uart1_write_str("MODE: LORA INTEROP TEST\r\n");
+
+    radio_ok = platform_radio_init(app_radio_rx_cb);
+    if (radio_ok) {
+        uart1_write_str("RADIO OK version=");
+        uart1_write_u32((uint32_t)platform_radio_version());
+        uart1_write_str(" profile=");
+        uart1_write_u32((uint32_t)platform_radio_profile());
+        uart1_write_str("\r\n");
+    } else {
+        uart1_write_str("RADIO INIT FAIL (check pin mapping)\r\n");
+    }
 
     while (1) {
-        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-        for (d = 0U; d < 250000U; d++) {
-            __NOP();
+        platform_port_set_time_ms(now_ms);
+        platform_radio_process();
+
+        if (radio_ok && ((now_ms - last_ping_ms) >= APP_PING_PERIOD_MS)) {
+            send_ok = platform_radio_send(LINK_SUCCESSOR, ping_msg, (uint16_t)(sizeof(ping_msg) - 1U));
+            if (send_ok) {
+                s_tx_count++;
+                uart1_write_str("TX: WYRES_PING\r\n");
+            } else {
+                uart1_write_str("TX: WYRES_PING FAIL\r\n");
+            }
+            last_ping_ms = now_ms;
         }
+
+        if ((now_ms - last_status_ms) >= 1000U) {
+            uart1_write_str("ALIVE t=");
+            uart1_write_u32(now_ms);
+            uart1_write_str("ms TX=");
+            uart1_write_u32(s_tx_count);
+            uart1_write_str(" RX=");
+            uart1_write_u32(s_rx_count);
+            uart1_write_str(" BAT=");
+            uart1_write_u32(platform_battery_mv());
+            uart1_write_str("mV\r\n");
+            last_status_ms = now_ms;
+        }
+
+        now_ms += 100U;
+        delay_ms(100U);
     }
 }

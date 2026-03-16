@@ -1,5 +1,13 @@
-/*
- * Reuse the STM32WL CMSIS system implementation so HAL can resolve
- * SystemCoreClock and prescaler lookup tables.
- */
-#include "../../Loraprojet/Src/system_stm32wlxx.c"
+#include <stdint.h>
+
+uint32_t SystemCoreClock = 16000000UL;
+
+void SystemInit(void)
+{
+    /* Keep reset clock configuration: HSI as SYSCLK on STM32L151. */
+}
+
+void SystemCoreClockUpdate(void)
+{
+    SystemCoreClock = 16000000UL;
+}

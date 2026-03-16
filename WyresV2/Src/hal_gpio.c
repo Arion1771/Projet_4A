@@ -1,1 +1,4 @@
-#include "../../Loraprojet/Inc/STM32Cube_FW_WL_V1.5.0/Drivers/STM32WLxx_HAL_Driver/Src/stm32wlxx_hal_gpio.c"
+/*
+ * Temporary migration stub:
+ * This module is disabled for the STM32L151 bring-up profile.
+ */
