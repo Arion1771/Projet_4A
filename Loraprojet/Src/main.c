@@ -20,6 +20,7 @@
 #define TX_TIMEOUT_MS          3000U
 #define APP_TX_PERIOD_MS       2000U
 #define APP_TX_RECOVER_MS      1200U
+#define APP_TX_ONLY_BEACON     1U
 
 static UART_HandleTypeDef huart1;
 static UART_HandleTypeDef huart2;
@@ -57,14 +58,19 @@ static uint8_t PayloadStartsWith(const uint8_t *payload, uint16_t size, const ch
 int main(void)
 {
     RadioState_t radio_state;
+    radio_status_t send_status;
     uint32_t now_ms;
     uint32_t last_tx_ms = 0U;
+    uint32_t last_alive_ms = 0U;
     uint32_t tx_start_ms = 0U;
     uint32_t tx_counter = 0U;
-    uint32_t alive_counter = 0U;
+    uint32_t tx_done_count = 0U;
+    uint32_t tx_timeout_count = 0U;
+    uint32_t tx_fail_count = 0U;
     uint32_t tx_recover_count = 0U;
     uint8_t tx_pending = 0U;
     char tx_msg[40];
+    char alive_msg[120];
 
     HAL_Init();
     SystemClock_Config();
@@ -74,6 +80,7 @@ int main(void)
     MX_SUBGHZ_Init();
 
     Uart_Log("BOOT LORAPROJET\r\n");
+    Uart_Log("MODE: TX STREAM\r\n");
     Uart_Log("BUILD: " __DATE__ " " __TIME__ "\r\n");
     Uart_Log("RFSW PROFILE ID: " STR(RBI_RF_SW_PROFILE) "\r\n");
 #if (RBI_RF_SW_PROFILE == RBI_RF_SW_PROFILE_WYRES_REVC)
@@ -84,7 +91,9 @@ int main(void)
 
     Radio_Init();
     Radio.SetPublicNetwork(false);
+#if (APP_TX_ONLY_BEACON == 0U)
     Radio.Rx(0);
+#endif
 
     while (1)
     {
@@ -113,17 +122,26 @@ int main(void)
 
             if ((should_reply != 0U) && (tx_pending == 0U))
             {
-                Radio_Reapply_Config();
                 Radio.Standby();
-                Radio.Send((uint8_t *)"LORA_PONG", (uint8_t)strlen("LORA_PONG"));
-                tx_pending = 1U;
-                tx_start_ms = HAL_GetTick();
-                last_tx_ms = now_ms;
-                Uart_Log("TX: LORA_PONG\r\n");
+                send_status = Radio.Send((uint8_t *)"LORA_PONG", (uint8_t)strlen("LORA_PONG"));
+                if (send_status == RADIO_STATUS_OK)
+                {
+                    tx_pending = 1U;
+                    tx_start_ms = HAL_GetTick();
+                    last_tx_ms = now_ms;
+                    Uart_Log("TX: LORA_PONG\r\n");
+                }
+                else
+                {
+                    tx_fail_count++;
+                    Uart_Log("TX: LORA_PONG FAIL\r\n");
+                }
             }
             else
             {
+#if (APP_TX_ONLY_BEACON == 0U)
                 Radio.Rx(0);
+#endif
             }
         }
 
@@ -133,8 +151,11 @@ int main(void)
             if (tx_pending != 0U)
             {
                 tx_pending = 0U;
+                tx_done_count++;
                 Uart_Log("TX DONE\r\n");
+#if (APP_TX_ONLY_BEACON == 0U)
                 Radio.Rx(0);
+#endif
             }
         }
 
@@ -142,22 +163,31 @@ int main(void)
         {
             radio_tx_timeout = 0U;
             tx_pending = 0U;
+            tx_timeout_count++;
             Uart_Log("TX TIMEOUT\r\n");
+#if (APP_TX_ONLY_BEACON == 0U)
             Radio.Rx(0);
+#else
+            Radio.Standby();
+#endif
         }
 
         if (radio_rx_timeout != 0U)
         {
             radio_rx_timeout = 0U;
             Uart_Log("RX TIMEOUT\r\n");
+#if (APP_TX_ONLY_BEACON == 0U)
             Radio.Rx(0);
+#endif
         }
 
         if (radio_rx_error != 0U)
         {
             radio_rx_error = 0U;
             Uart_Log("RX ERROR\r\n");
+#if (APP_TX_ONLY_BEACON == 0U)
             Radio.Rx(0);
+#endif
         }
 
         if (tx_pending != 0U)
@@ -169,7 +199,11 @@ int main(void)
             {
                 tx_pending = 0U;
                 Uart_Log("TX RECOVER\r\n");
+#if (APP_TX_ONLY_BEACON == 0U)
                 Radio.Rx(0);
+#else
+                Radio.Standby();
+#endif
             }
             else if ((HAL_GetTick() - tx_start_ms) > APP_TX_RECOVER_MS)
             {
@@ -178,34 +212,50 @@ int main(void)
                 tx_recover_count++;
                 Uart_Log("TX FORCE-RECOVER\r\n");
                 Radio.Standby();
+#if (APP_TX_ONLY_BEACON == 0U)
                 Radio.Rx(0);
+#endif
             }
         }
 
         if ((tx_pending == 0U) && ((now_ms - last_tx_ms) >= APP_TX_PERIOD_MS))
         {
-            Radio_Reapply_Config();
-            /* Force a fresh TX cycle without relying on pending IRQ processing. */
+            /* Keep TX flow minimal and deterministic: Standby -> Send only. */
             Radio.Standby();
             (void)snprintf(tx_msg, sizeof(tx_msg), "LORA_PING %lu", (unsigned long)tx_counter++);
-            Radio.Send((uint8_t *)tx_msg, (uint8_t)strlen(tx_msg));
-            tx_pending = 1U;
-            tx_start_ms = HAL_GetTick();
-
-            Uart_Log("TX: ");
-            Uart_Log(tx_msg);
-            Uart_Log("\r\n");
+            send_status = Radio.Send((uint8_t *)tx_msg, (uint8_t)strlen(tx_msg));
+            if (send_status == RADIO_STATUS_OK)
+            {
+                tx_pending = 1U;
+                tx_start_ms = HAL_GetTick();
+                Uart_Log("TX: ");
+                Uart_Log(tx_msg);
+                Uart_Log("\r\n");
+            }
+            else
+            {
+                tx_fail_count++;
+                Uart_Log("TX FAIL\r\n");
+            }
 
             last_tx_ms = now_ms;
         }
 
-        alive_counter++;
-        if (alive_counter >= 80000U)
+        if ((now_ms - last_alive_ms) >= 1000U)
         {
-            char alive_msg[48];
-            alive_counter = 0U;
-            (void)snprintf(alive_msg, sizeof(alive_msg), "ALIVE TXREC=%lu\r\n", (unsigned long)tx_recover_count);
+            radio_state = Radio.GetStatus();
+            (void)snprintf(alive_msg,
+                           sizeof(alive_msg),
+                           "ALIVE t=%lums TX=%lu DONE=%lu TO=%lu FAIL=%lu REC=%lu ST=%d\r\n",
+                           (unsigned long)now_ms,
+                           (unsigned long)tx_counter,
+                           (unsigned long)tx_done_count,
+                           (unsigned long)tx_timeout_count,
+                           (unsigned long)tx_fail_count,
+                           (unsigned long)tx_recover_count,
+                           (int)radio_state);
             Uart_Log(alive_msg);
+            last_alive_ms = now_ms;
         }
     }
 }

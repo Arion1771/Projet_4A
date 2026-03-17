@@ -89,9 +89,9 @@
 #define LORA_TX_TIMEOUT_MS         2200U
 #define LORA_TX_RECOVER_MS         300U
 #define LORA_RX_GUARD_MS           250U
-#define LORA_RX_SOFT_RECOVER_MS    900U
-#define LORA_RX_STUCK_RESET_MS     3500U
-#define LORA_RX_RECOVER_GAP_MS     1000U
+#define LORA_RX_SOFT_RECOVER_MS    3000U
+#define LORA_RX_STUCK_RESET_MS     30000U
+#define LORA_RX_RECOVER_GAP_MS     10000U
 #define RADIO_PROFILE_PREFERRED    0U
 #define RADIO_USE_TCXO             0U
 #define RADIO_USE_RF_SWITCH        1U
@@ -289,6 +289,13 @@ static uint32_t s_rx_guard_ms = 0U;
 static uint32_t s_last_rx_event_ms = 0U;
 static uint32_t s_last_recover_ms = 0U;
 static uint8_t s_rx_buffer[LORA_RX_MAX_PAYLOAD];
+static uint32_t s_dbg_rx_done_count = 0U;
+static uint32_t s_dbg_crc_err_count = 0U;
+static uint32_t s_dbg_rx_timeout_count = 0U;
+static uint32_t s_dbg_rearm_count = 0U;
+static uint32_t s_dbg_hard_reset_count = 0U;
+static uint8_t s_dbg_last_irq_flags = 0U;
+static uint8_t s_dbg_last_opmode = 0U;
 static bool s_led2_enabled = true;
 static bool s_spi_cpol = false;
 static bool s_spi_cpha = false;
@@ -753,16 +760,17 @@ static void radio_configure_lora(void)
 
 static void radio_start_rx_continuous(void)
 {
+    uint8_t opmode;
+
     radio_set_rf_switch(false);
-    /*
-     * Move through STDBY before re-entering RX to avoid sticky RX state
-     * observed after first packet on some SX1272 boards.
-     */
     radio_write_reg(SX127X_REG_OPMODE, SX127X_OPMODE_LONG_RANGE | SX127X_OPMODE_STDBY);
     radio_write_reg(SX127X_REG_IRQ_FLAGS, 0xFFU);
     radio_write_reg(SX127X_REG_FIFO_ADDR_PTR, radio_read_reg(SX127X_REG_FIFO_RX_BASE));
     radio_write_reg(SX127X_REG_DIO_MAPPING1, 0x00U);
     radio_write_reg(SX127X_REG_OPMODE, SX127X_OPMODE_LONG_RANGE | SX127X_OPMODE_RX_CONT);
+    opmode = radio_read_reg(SX127X_REG_OPMODE);
+    s_dbg_last_opmode = opmode;
+    s_dbg_rearm_count++;
     s_radio_state = RADIO_STATE_RX;
     s_rx_guard_ms = s_now_ms;
 }
@@ -822,6 +830,13 @@ bool platform_radio_init(platform_radio_rx_cb_t cb)
     s_radio_state = RADIO_STATE_OFF;
     s_last_rx_event_ms = s_now_ms;
     s_last_recover_ms = s_now_ms;
+    s_dbg_rx_done_count = 0U;
+    s_dbg_crc_err_count = 0U;
+    s_dbg_rx_timeout_count = 0U;
+    s_dbg_rearm_count = 0U;
+    s_dbg_hard_reset_count = 0U;
+    s_dbg_last_irq_flags = 0U;
+    s_dbg_last_opmode = 0U;
 
     debug_port_enable_swd_only();
     if (!radio_detect()) {
@@ -838,12 +853,14 @@ void platform_radio_process(void)
 {
     uint8_t irq_flags;
     uint8_t opmode;
+    uint32_t since_last_rx;
 
     if ((s_profile == NULL) || (s_radio_state == RADIO_STATE_OFF)) {
         return;
     }
 
     irq_flags = radio_read_reg(SX127X_REG_IRQ_FLAGS);
+    s_dbg_last_irq_flags = irq_flags;
 
     if (s_radio_state == RADIO_STATE_TX) {
         if ((irq_flags & SX127X_IRQ_TX_DONE) != 0U) {
@@ -873,15 +890,14 @@ void platform_radio_process(void)
         int16_t rssi_dbm;
 
         if ((irq_flags & SX127X_IRQ_PAYLOAD_CRC_ERR) != 0U) {
-            radio_write_reg(SX127X_REG_IRQ_FLAGS, 0xFFU);
-            radio_start_rx_continuous();
+            s_dbg_crc_err_count++;
+            radio_write_reg(SX127X_REG_IRQ_FLAGS, SX127X_IRQ_RX_DONE | SX127X_IRQ_PAYLOAD_CRC_ERR);
             return;
         }
 
         len = radio_read_reg(SX127X_REG_RX_NB_BYTES);
         if (len == 0U) {
-            radio_write_reg(SX127X_REG_IRQ_FLAGS, 0xFFU);
-            radio_start_rx_continuous();
+            radio_write_reg(SX127X_REG_IRQ_FLAGS, SX127X_IRQ_RX_DONE);
             return;
         }
         if (len > LORA_RX_MAX_PAYLOAD) {
@@ -894,14 +910,15 @@ void platform_radio_process(void)
 
         snr_db = radio_read_snr_db();
         rssi_dbm = radio_read_rssi_dbm(snr_db);
+        s_dbg_rx_done_count++;
         s_last_rx_event_ms = s_now_ms;
-
-        /*
-         * Explicitly re-arm RX right after FIFO read to avoid single-packet lockups
-         * seen on this board/profile combination.
-         */
-        radio_write_reg(SX127X_REG_IRQ_FLAGS, 0xFFU);
-        radio_start_rx_continuous();
+        radio_write_reg(SX127X_REG_IRQ_FLAGS, SX127X_IRQ_RX_DONE);
+        opmode = radio_read_reg(SX127X_REG_OPMODE);
+        s_dbg_last_opmode = opmode;
+        if (((opmode & SX127X_OPMODE_LONG_RANGE) == 0U) ||
+            ((opmode & 0x07U) != SX127X_OPMODE_RX_CONT)) {
+            radio_start_rx_continuous();
+        }
 
         if (s_rx_cb != NULL) {
             s_rx_cb(LINK_PREDECESSOR, s_rx_buffer, len, rssi_dbm, snr_db);
@@ -911,29 +928,41 @@ void platform_radio_process(void)
     }
 
     if ((irq_flags & SX127X_IRQ_RX_TIMEOUT) != 0U) {
+        s_dbg_rx_timeout_count++;
         radio_write_reg(SX127X_REG_IRQ_FLAGS, SX127X_IRQ_RX_TIMEOUT);
-        radio_start_rx_continuous();
+        opmode = radio_read_reg(SX127X_REG_OPMODE);
+        s_dbg_last_opmode = opmode;
+        if (((opmode & SX127X_OPMODE_LONG_RANGE) == 0U) ||
+            ((opmode & 0x07U) != SX127X_OPMODE_RX_CONT)) {
+            radio_start_rx_continuous();
+        }
         return;
     }
 
     if (s_radio_state == RADIO_STATE_RX) {
+        since_last_rx = s_now_ms - s_last_rx_event_ms;
+
         if ((s_now_ms - s_rx_guard_ms) >= LORA_RX_GUARD_MS) {
             opmode = radio_read_reg(SX127X_REG_OPMODE);
+            s_dbg_last_opmode = opmode;
             if ((opmode & SX127X_OPMODE_LONG_RANGE) == 0U ||
-                (opmode & 0x07U) != SX127X_OPMODE_RX_CONT ||
-                (s_now_ms - s_last_rx_event_ms) >= LORA_RX_SOFT_RECOVER_MS) {
+                (opmode & 0x07U) != SX127X_OPMODE_RX_CONT) {
                 radio_start_rx_continuous();
+            } else if (since_last_rx >= LORA_RX_SOFT_RECOVER_MS) {
+                /* Light recovery only: clear stale IRQs but keep RX continuous. */
+                radio_write_reg(SX127X_REG_IRQ_FLAGS, 0xFFU);
             }
             s_rx_guard_ms = s_now_ms;
         }
 
-        if (((s_now_ms - s_last_rx_event_ms) >= LORA_RX_STUCK_RESET_MS) &&
+        if ((since_last_rx >= LORA_RX_STUCK_RESET_MS) &&
             ((s_now_ms - s_last_recover_ms) >= LORA_RX_RECOVER_GAP_MS)) {
             /* Hard recovery from silent RX lock-up observed on some board/profile combos. */
             radio_reset();
             radio_configure_lora();
             radio_start_rx_continuous();
             s_last_recover_ms = s_now_ms;
+            s_dbg_hard_reset_count++;
         }
     }
 }
@@ -986,6 +1015,41 @@ uint8_t platform_radio_probe_af(uint8_t idx)
         return 0xFFU;
     }
     return s_probe_af[idx];
+}
+
+uint32_t platform_radio_dbg_rx_done_count(void)
+{
+    return s_dbg_rx_done_count;
+}
+
+uint32_t platform_radio_dbg_crc_err_count(void)
+{
+    return s_dbg_crc_err_count;
+}
+
+uint32_t platform_radio_dbg_rx_timeout_count(void)
+{
+    return s_dbg_rx_timeout_count;
+}
+
+uint32_t platform_radio_dbg_rearm_count(void)
+{
+    return s_dbg_rearm_count;
+}
+
+uint32_t platform_radio_dbg_hard_reset_count(void)
+{
+    return s_dbg_hard_reset_count;
+}
+
+uint8_t platform_radio_dbg_last_irq_flags(void)
+{
+    return s_dbg_last_irq_flags;
+}
+
+uint8_t platform_radio_dbg_last_opmode(void)
+{
+    return s_dbg_last_opmode;
 }
 
 void platform_led_set(led_state_t state)

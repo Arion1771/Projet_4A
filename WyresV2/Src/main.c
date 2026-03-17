@@ -326,7 +326,7 @@ int main(void)
 
     uart1_init_115200();
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: RX_STREAM_FIX5\r\n");
+    uart1_write_str("BUILD: RX_STREAM_STABLE\r\n");
     uart1_write_str("MODE: LORA INTEROP TEST\r\n");
 
     radio_ok = platform_radio_init(app_radio_rx_cb);
@@ -390,12 +390,30 @@ int main(void)
         }
 
         if ((now_ms - last_status_ms) >= 1000U) {
+            uint8_t irq = platform_radio_dbg_last_irq_flags();
+            uint8_t opm = platform_radio_dbg_last_opmode();
             uart1_write_str("ALIVE t=");
             uart1_write_u32(now_ms);
             uart1_write_str("ms TX=");
             uart1_write_u32(s_tx_count);
             uart1_write_str(" RX=");
             uart1_write_u32(s_rx_count);
+            uart1_write_str(" RD=");
+            uart1_write_u32(platform_radio_dbg_rx_done_count());
+            uart1_write_str(" CE=");
+            uart1_write_u32(platform_radio_dbg_crc_err_count());
+            uart1_write_str(" TO=");
+            uart1_write_u32(platform_radio_dbg_rx_timeout_count());
+            uart1_write_str(" RA=");
+            uart1_write_u32(platform_radio_dbg_rearm_count());
+            uart1_write_str(" HR=");
+            uart1_write_u32(platform_radio_dbg_hard_reset_count());
+            uart1_write_str(" IRQ=0x");
+            uart1_write_char("0123456789ABCDEF"[(irq >> 4) & 0x0FU]);
+            uart1_write_char("0123456789ABCDEF"[irq & 0x0FU]);
+            uart1_write_str(" OPM=0x");
+            uart1_write_char("0123456789ABCDEF"[(opm >> 4) & 0x0FU]);
+            uart1_write_char("0123456789ABCDEF"[opm & 0x0FU]);
             uart1_write_str(" BAT=");
             uart1_write_u32(platform_battery_mv());
             uart1_write_str("mV\r\n");

@@ -33,6 +33,13 @@ uint8_t platform_radio_probe_count(void);
 uint8_t platform_radio_probe_profile(uint8_t idx);
 uint8_t platform_radio_probe_version(uint8_t idx);
 uint8_t platform_radio_probe_af(uint8_t idx);
+uint32_t platform_radio_dbg_rx_done_count(void);
+uint32_t platform_radio_dbg_crc_err_count(void);
+uint32_t platform_radio_dbg_rx_timeout_count(void);
+uint32_t platform_radio_dbg_rearm_count(void);
+uint32_t platform_radio_dbg_hard_reset_count(void);
+uint8_t platform_radio_dbg_last_irq_flags(void);
+uint8_t platform_radio_dbg_last_opmode(void);
 
 /* LED and local indicators */
 void platform_led_set(led_state_t state);
