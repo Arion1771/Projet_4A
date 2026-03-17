@@ -27,6 +27,12 @@ uint32_t platform_millis(void);
 bool platform_radio_init(platform_radio_rx_cb_t cb);
 void platform_radio_process(void);
 bool platform_radio_send(link_direction_t dir, const uint8_t *data, uint16_t len);
+uint8_t platform_radio_version(void);
+uint8_t platform_radio_profile(void);
+uint8_t platform_radio_probe_count(void);
+uint8_t platform_radio_probe_profile(uint8_t idx);
+uint8_t platform_radio_probe_version(uint8_t idx);
+uint8_t platform_radio_probe_af(uint8_t idx);
 
 /* LED and local indicators */
 void platform_led_set(led_state_t state);

@@ -1,19 +1,4 @@
-#include "stm32wlxx_hal.h"
-
-extern SUBGHZ_HandleTypeDef hsubghz;
-
-void SysTick_Handler(void)
-{
-    HAL_IncTick();
-    HAL_SYSTICK_IRQHandler();
-}
-
-void SUBGHZ_Radio_IRQHandler(void)
-{
-    HAL_SUBGHZ_IRQHandler(&hsubghz);
-}
-
-void Radio_IRQ_Busy_IRQHandler(void)
-{
-    HAL_SUBGHZ_IRQHandler(&hsubghz);
-}
+/*
+ * Temporary migration stub:
+ * This module is disabled for the STM32L151 bring-up profile.
+ */

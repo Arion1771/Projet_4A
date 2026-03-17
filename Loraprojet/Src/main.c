@@ -15,6 +15,7 @@
 #define LORA_SYMBOL_TIMEOUT    5
 #define TX_TIMEOUT_MS          3000U
 #define APP_TX_PERIOD_MS       2000U
+#define APP_TX_RECOVER_MS      1200U
 
 static UART_HandleTypeDef huart1;
 static UART_HandleTypeDef huart2;
@@ -46,6 +47,7 @@ static void OnRxError(void);
 static void Uart_Log(const char *msg);
 static void Uart_LogText(const uint8_t *data, uint16_t size);
 static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
+static uint8_t PayloadStartsWith(const uint8_t *payload, uint16_t size, const char *prefix);
 
 int main(void)
 {
@@ -55,6 +57,7 @@ int main(void)
     uint32_t tx_start_ms = 0U;
     uint32_t tx_counter = 0U;
     uint32_t alive_counter = 0U;
+    uint32_t tx_recover_count = 0U;
     uint8_t tx_pending = 0U;
     char tx_msg[40];
 
@@ -68,16 +71,21 @@ int main(void)
     Uart_Log("BOOT LORAPROJET\r\n");
 
     Radio_Init();
+    Radio.SetPublicNetwork(false);
     Radio.Rx(0);
 
     while (1)
     {
+        now_ms = HAL_GetTick();
+
         /* Required by SubGHz PHY stack to dispatch radio callbacks. */
         Radio.IrqProcess();
         TimerProcess();
 
         if (radio_rx_done != 0U)
         {
+            uint8_t should_reply = 0U;
+
             radio_rx_done = 0U;
 
             Uart_Log("RX: ");
@@ -85,7 +93,25 @@ int main(void)
             Uart_Log("\r\n");
 
             HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-            Radio.Rx(0);
+
+            if (PayloadStartsWith(rx_buffer, rx_size, "WYRES_PING") != 0U)
+            {
+                should_reply = 1U;
+            }
+
+            if ((should_reply != 0U) && (tx_pending == 0U))
+            {
+                Radio.Standby();
+                Radio.Send((uint8_t *)"LORA_PONG", (uint8_t)strlen("LORA_PONG"));
+                tx_pending = 1U;
+                tx_start_ms = HAL_GetTick();
+                last_tx_ms = now_ms;
+                Uart_Log("TX: LORA_PONG\r\n");
+            }
+            else
+            {
+                Radio.Rx(0);
+            }
         }
 
         if (radio_tx_done != 0U)
@@ -132,23 +158,22 @@ int main(void)
                 Uart_Log("TX RECOVER\r\n");
                 Radio.Rx(0);
             }
-            else if ((HAL_GetTick() - tx_start_ms) > (TX_TIMEOUT_MS + 1000U))
+            else if ((HAL_GetTick() - tx_start_ms) > APP_TX_RECOVER_MS)
             {
-                /* Hard recovery when TX never completes on IRQ path. */
+                /* Hard recovery when TX stays pending too long on IRQ path. */
                 tx_pending = 0U;
-                Uart_Log("TX STALL RESET\r\n");
+                tx_recover_count++;
+                Uart_Log("TX FORCE-RECOVER\r\n");
                 Radio.Standby();
                 Radio.Rx(0);
             }
         }
 
-        now_ms = HAL_GetTick();
-
         if ((tx_pending == 0U) && ((now_ms - last_tx_ms) >= APP_TX_PERIOD_MS))
         {
             /* Force a fresh TX cycle without relying on pending IRQ processing. */
             Radio.Standby();
-            (void)snprintf(tx_msg, sizeof(tx_msg), "MSG %lu", (unsigned long)tx_counter++);
+            (void)snprintf(tx_msg, sizeof(tx_msg), "LORA_PING %lu", (unsigned long)tx_counter++);
             Radio.Send((uint8_t *)tx_msg, (uint8_t)strlen(tx_msg));
             tx_pending = 1U;
             tx_start_ms = HAL_GetTick();
@@ -163,10 +188,30 @@ int main(void)
         alive_counter++;
         if (alive_counter >= 80000U)
         {
+            char alive_msg[48];
             alive_counter = 0U;
-            Uart_Log("ALIVE\r\n");
+            (void)snprintf(alive_msg, sizeof(alive_msg), "ALIVE TXREC=%lu\r\n", (unsigned long)tx_recover_count);
+            Uart_Log(alive_msg);
         }
     }
+}
+
+static uint8_t PayloadStartsWith(const uint8_t *payload, uint16_t size, const char *prefix)
+{
+    uint16_t n;
+
+    if ((payload == NULL) || (prefix == NULL))
+    {
+        return 0U;
+    }
+
+    n = (uint16_t)strlen(prefix);
+    if (size < n)
+    {
+        return 0U;
+    }
+
+    return (memcmp(payload, prefix, n) == 0) ? 1U : 0U;
 }
 
 static void Radio_Init(void)
