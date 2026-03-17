@@ -326,7 +326,7 @@ int main(void)
 
     uart1_init_115200();
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: RX_ALL_SW_RECOV3\r\n");
+    uart1_write_str("BUILD: RX_STREAM_FIX5\r\n");
     uart1_write_str("MODE: LORA INTEROP TEST\r\n");
 
     radio_ok = platform_radio_init(app_radio_rx_cb);

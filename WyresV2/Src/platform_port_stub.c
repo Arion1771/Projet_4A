@@ -89,6 +89,7 @@
 #define LORA_TX_TIMEOUT_MS         2200U
 #define LORA_TX_RECOVER_MS         300U
 #define LORA_RX_GUARD_MS           250U
+#define LORA_RX_SOFT_RECOVER_MS    900U
 #define LORA_RX_STUCK_RESET_MS     3500U
 #define LORA_RX_RECOVER_GAP_MS     1000U
 #define RADIO_PROFILE_PREFERRED    0U
@@ -475,10 +476,12 @@ static void radio_read_fifo(uint8_t *buffer, uint8_t len)
         return;
     }
     radio_nss(false);
+    delay_cycles(40UL);
     (void)spi1_xfer((uint8_t)(SX127X_REG_FIFO & 0x7FU));
     for (i = 0U; i < len; i++) {
         buffer[i] = spi1_xfer(0x00U);
     }
+    delay_cycles(40UL);
     radio_nss(true);
 }
 
@@ -489,10 +492,12 @@ static void radio_write_fifo(const uint8_t *buffer, uint8_t len)
         return;
     }
     radio_nss(false);
+    delay_cycles(40UL);
     (void)spi1_xfer((uint8_t)(SX127X_REG_FIFO | 0x80U));
     for (i = 0U; i < len; i++) {
         (void)spi1_xfer(buffer[i]);
     }
+    delay_cycles(40UL);
     radio_nss(true);
 }
 
@@ -503,16 +508,16 @@ static void radio_set_rf_switch(bool tx_on)
     if (s_profile == NULL) {
         return;
     }
-    /* W_BASE board-switch policy:
-     * - TX: CTRL1=0, CTRL2=1
-     * - RX: CTRL1=1, CTRL2=1
-     * Here rf_tx_pin is used as CTRL1 and rf_rx_pin as CTRL2.
+    /*
+     * Conservative dual-control RF switch policy:
+     * - TX: rf_tx=1, rf_rx=0
+     * - RX: rf_tx=0, rf_rx=1
      */
     if ((s_profile->rf_tx_port != NULL) && (s_profile->rf_tx_pin != PIN_NONE)) {
-        gpio_write(s_profile->rf_tx_port, s_profile->rf_tx_pin, !tx_on);
+        gpio_write(s_profile->rf_tx_port, s_profile->rf_tx_pin, tx_on);
     }
     if ((s_profile->rf_rx_port != NULL) && (s_profile->rf_rx_pin != PIN_NONE)) {
-        gpio_write(s_profile->rf_rx_port, s_profile->rf_rx_pin, true);
+        gpio_write(s_profile->rf_rx_port, s_profile->rf_rx_pin, !tx_on);
     }
 #endif
 }
@@ -721,7 +726,7 @@ static void radio_configure_lora(void)
     radio_write_reg(SX127X_REG_FIFO_ADDR_PTR, 0x00U);
 
     if (s_radio_version == SX127X_VERSION_SX1272) {
-        /* BW125 / CR4:5 / explicit / CRC on / low data rate off */
+        /* SX1272 LoRa setup: BW125 / CR4:5 / explicit / CRC on / AGC on. */
         radio_write_reg(SX127X_REG_MODEM_CFG1, 0x0AU);
         /* SF7 / AGC on / symb timeout msb = 0 */
         radio_write_reg(SX127X_REG_MODEM_CFG2, 0x74U);
@@ -735,7 +740,7 @@ static void radio_configure_lora(void)
         radio_write_reg(SX127X_REG_PA_DAC, 0x84U);
     }
 
-    radio_write_reg(SX127X_REG_SYMB_TIMEOUT, 0x05U);
+    radio_write_reg(SX127X_REG_SYMB_TIMEOUT, 0x08U);
     radio_write_reg(SX127X_REG_PREAMBLE_MSB, 0x00U);
     radio_write_reg(SX127X_REG_PREAMBLE_LSB, 0x08U);
     radio_write_reg(SX127X_REG_PAYLOAD_LEN, 0xFFU);
@@ -749,8 +754,14 @@ static void radio_configure_lora(void)
 static void radio_start_rx_continuous(void)
 {
     radio_set_rf_switch(false);
+    /*
+     * Move through STDBY before re-entering RX to avoid sticky RX state
+     * observed after first packet on some SX1272 boards.
+     */
+    radio_write_reg(SX127X_REG_OPMODE, SX127X_OPMODE_LONG_RANGE | SX127X_OPMODE_STDBY);
     radio_write_reg(SX127X_REG_IRQ_FLAGS, 0xFFU);
     radio_write_reg(SX127X_REG_FIFO_ADDR_PTR, radio_read_reg(SX127X_REG_FIFO_RX_BASE));
+    radio_write_reg(SX127X_REG_DIO_MAPPING1, 0x00U);
     radio_write_reg(SX127X_REG_OPMODE, SX127X_OPMODE_LONG_RANGE | SX127X_OPMODE_RX_CONT);
     s_radio_state = RADIO_STATE_RX;
     s_rx_guard_ms = s_now_ms;
@@ -861,16 +872,15 @@ void platform_radio_process(void)
         int8_t snr_db;
         int16_t rssi_dbm;
 
-        radio_write_reg(SX127X_REG_IRQ_FLAGS, SX127X_IRQ_RX_DONE | SX127X_IRQ_PAYLOAD_CRC_ERR);
         if ((irq_flags & SX127X_IRQ_PAYLOAD_CRC_ERR) != 0U) {
-            radio_configure_lora();
+            radio_write_reg(SX127X_REG_IRQ_FLAGS, 0xFFU);
             radio_start_rx_continuous();
             return;
         }
 
         len = radio_read_reg(SX127X_REG_RX_NB_BYTES);
         if (len == 0U) {
-            radio_configure_lora();
+            radio_write_reg(SX127X_REG_IRQ_FLAGS, 0xFFU);
             radio_start_rx_continuous();
             return;
         }
@@ -886,18 +896,22 @@ void platform_radio_process(void)
         rssi_dbm = radio_read_rssi_dbm(snr_db);
         s_last_rx_event_ms = s_now_ms;
 
+        /*
+         * Explicitly re-arm RX right after FIFO read to avoid single-packet lockups
+         * seen on this board/profile combination.
+         */
+        radio_write_reg(SX127X_REG_IRQ_FLAGS, 0xFFU);
+        radio_start_rx_continuous();
+
         if (s_rx_cb != NULL) {
             s_rx_cb(LINK_PREDECESSOR, s_rx_buffer, len, rssi_dbm, snr_db);
         }
 
-        radio_configure_lora();
-        radio_start_rx_continuous();
         return;
     }
 
     if ((irq_flags & SX127X_IRQ_RX_TIMEOUT) != 0U) {
         radio_write_reg(SX127X_REG_IRQ_FLAGS, SX127X_IRQ_RX_TIMEOUT);
-        radio_configure_lora();
         radio_start_rx_continuous();
         return;
     }
@@ -906,7 +920,8 @@ void platform_radio_process(void)
         if ((s_now_ms - s_rx_guard_ms) >= LORA_RX_GUARD_MS) {
             opmode = radio_read_reg(SX127X_REG_OPMODE);
             if ((opmode & SX127X_OPMODE_LONG_RANGE) == 0U ||
-                (opmode & 0x07U) != SX127X_OPMODE_RX_CONT) {
+                (opmode & 0x07U) != SX127X_OPMODE_RX_CONT ||
+                (s_now_ms - s_last_rx_event_ms) >= LORA_RX_SOFT_RECOVER_MS) {
                 radio_start_rx_continuous();
             }
             s_rx_guard_ms = s_now_ms;
