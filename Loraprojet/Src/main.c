@@ -15,6 +15,7 @@
 #define LORA_SYMBOL_TIMEOUT    5
 #define TX_TIMEOUT_MS          3000U
 #define APP_TX_PERIOD_MS       2000U
+#define APP_TX_RECOVER_MS      1200U
 
 static UART_HandleTypeDef huart1;
 static UART_HandleTypeDef huart2;
@@ -56,6 +57,7 @@ int main(void)
     uint32_t tx_start_ms = 0U;
     uint32_t tx_counter = 0U;
     uint32_t alive_counter = 0U;
+    uint32_t tx_recover_count = 0U;
     uint8_t tx_pending = 0U;
     char tx_msg[40];
 
@@ -156,11 +158,12 @@ int main(void)
                 Uart_Log("TX RECOVER\r\n");
                 Radio.Rx(0);
             }
-            else if ((HAL_GetTick() - tx_start_ms) > (TX_TIMEOUT_MS + 1000U))
+            else if ((HAL_GetTick() - tx_start_ms) > APP_TX_RECOVER_MS)
             {
-                /* Hard recovery when TX never completes on IRQ path. */
+                /* Hard recovery when TX stays pending too long on IRQ path. */
                 tx_pending = 0U;
-                Uart_Log("TX STALL RESET\r\n");
+                tx_recover_count++;
+                Uart_Log("TX FORCE-RECOVER\r\n");
                 Radio.Standby();
                 Radio.Rx(0);
             }
@@ -185,8 +188,10 @@ int main(void)
         alive_counter++;
         if (alive_counter >= 80000U)
         {
+            char alive_msg[48];
             alive_counter = 0U;
-            Uart_Log("ALIVE\r\n");
+            (void)snprintf(alive_msg, sizeof(alive_msg), "ALIVE TXREC=%lu\r\n", (unsigned long)tx_recover_count);
+            Uart_Log(alive_msg);
         }
     }
 }
