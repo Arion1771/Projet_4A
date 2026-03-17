@@ -1,100 +1,97 @@
-# Projet INFO4 : Réseau maillé sans fil pour les secours spéléologiques
+# Project INFO4: Wireless Mesh Network for Cave Rescue Operations
 
 ---
 
 ## Description
 
-Ce projet consiste a concevoir et implémenter d'un système de communication LoRa permettant de maintenir une transmission avec l'exterieur lors de déplacement en milieu souterrain (spéléologie). Cela doit être réalisé à l'aide d'un réseau modifiable de noeuds relais.
-Il doit etre réalisé à l'aide 4 noeuds LoRa, deux ordinateur pour la programmation et un téléphone portable android pour les tests
+This project involves designing and implementing a LoRa communication system that allows people to keep contact with the outside world while moving underground (mostly in cave exploration). This is achieved using a flexible network of relay nodes. The system will use two LoRa nodes, two computers for programming, and an Android phone for testing.
 
-
-Le projet s'étend du 05/01/2026 et finit le 30/03/2026
-
+The project runs from January 5, 2026 to March 30, 2026.
 
 ---
 
-## Exigences
+## Requirements
 
-### Exigences Fonctionnelles
-- Transmission fiable entre deux noeuds consecutifs sans perte d'informations (Le systeme doit permettre l'échange de messages entre le noeud de départ et le noeud d'arrivée via une chaine de noeuds intermédiaires)
-- Architecture linéaire du réseau
-- Chaque noeud doit pouvoir communiquer de manière bidirectionnelle (chaque noeud doit pouvoir communiquer avec son prédecesseur et son successeur pour transmettre des messages dans les deux sens)
-- Les messages du système doivent être de type : SMS, d'alerte ou de communication réseau (état du réseau ou insertion d'un nouveau noeud dans la chaine)
-- Détection de limite de portée entre deux noeuds consecutifs (le systeme doit detecter l'approche de la limite de portée du dernier noeuds posé, prevenant l'utilisateur qu'il faut ajouter un nouveau noeud à la chaine)
-- L'utilisateur doit etre prévenu lorsque la limite de portée est atteinte (son et vibration)
-- Les messages d'alertes doivent etre traités en priorité sur le réseau et transmis à tous les noeuds de la chaine ainsi qu'à tous les utilisateurs connéctés (Les messages d'alertes doivent declencher une LED rouge sur chaque noeud et doivent etre signalés aux utilisateurs par un son et une vibration)
-- Deploiment incrémental du réseau de noeuds (le systeme doit etre deployé au fil de l'avancée en souterrain, permettant à tout moment l'ajout d'un nouveau noeud relais. Il doit s'inserer automatiquement à l'allumage et confirmer cela par l'allumage d'une LED d'une couleur particulière (verte))
-- Lors de l'allumage du module, il doit se connecter au réseau puis verifier le bon état de la communication (si cette dernière est possible mais aussi en s'annoncant au réseau pour en mettre l'état a jour)
-- Indication de l'état de chaque noeud à travers une LED (Eteinte : Hors tension / Orange : Allumé mais non connécté / Verte : connécté au réseau / Rouge : message d'alerte actif)
-- Garantir une interface utilisateur par application smartphone (l'application doit permettre l'envoi et la reception de messages textuels ou d'alertes et l'état de la connection au réseau (perdu, connécté ou limite atteinte))
-- Garantir une livraison fiable des messages (avec retransmission en cas d'echec (mécanisme d'ACK))
-- Connaissance de l'état du réseau (Les noeuds doivent échanger des messages permettant de connaitre l'état du réseau à tout moment (continuité de la chaine, nouvelle insertion de noeud ou modification du reseau))
-- Vérification de l'état de la batterie des modules et annonce si celle ci est trop basse a l'utilisateur (message simple sur l'application) (si impossibilité de réaliser le système en physique, possibilité d'ajouter seulement la verification dans l'API)
+### Functional Requirements
+- Reliable transmission between two connected nodes without losing information (The system must allow message exchange between the starting node and the ending node through a chain of intermediate nodes)
+- Linear network structure
+- Each node must communicate in both directions (each node can talk to the node before and after it to send messages both ways)
+- Messages in the system are of three types: SMS, alerts, or network messages (network status or new node added to the chain)
+- Detection of range limits between two connected nodes (the system detects when reaching the limit of the last node's range and warns the user to add a new node)
+- User is notified when range limit is reached (sound or vibration)
+- Alert messages are treated with higher priority and sent to all nodes in the chain and to the connected users (Alert messages trigger a red LED on each node and notify users with sound or vibration on their phone)
+- Gradual network growth (the system deploys as users move deeper underground, allowing new relay nodes to be added at any time. New nodes automatically join the network and confirm this with a specific LED color (green))
+- When a module powers on, it connects to the network and checks that communication is working properly (by testing connection and announcing itself to update network status)
+- LED indicator for each node status (Off: No power / Orange: On but not connected / Green: Connected to network / Red: Alert message active)
+- User-friendly smartphone application (allows sending and receiving text messages or alerts and shows network connection status: lost, connected, or limit reached)
+- Reliable message delivery (with automatic resending if delivery fails (ACK mechanism))
+- Network awareness (Nodes exchange messages to know the network state at all times: chain continuity, new node insertion, or network changes)
+- Battery level monitoring and notification when battery is low (simple message on the app) (if physical implementation is not possible, battery check can be added to the API only)
 
-### Exigences Non-Fonctionnelles
-- La fiabilité doit etre privilégiée (par rapport au débit et à la latence)
-- Les messages d'alertes doivent toujours être transmis en priorité
-- Le système doit pouvoir fonctionner en milieu souterrain (propagation radio fortement attenuée et imprévisible et environnement evolutif (humide et instable))
-- La consommation énergitique doit être maitrisée (les noeuds doivent fonctionner sur batterie rechargeable et les communications doivent utiliser le minimum d'énergie)
-- Le système doit etre simple et rapide d'usage (UI minimale et application simple d'utilisation permettant la communication rapide)
+### Non-Functional Requirements
+- Reliability is more important than speed or delay
+- Alert messages must always be sent first (highest priority)
+- The system must work underground (radio signals are weakened and unpredictable, and the environment is changing: wet and unstable)
+- Power consumption must be controlled (nodes run on rechargeable batteries and communications must use minimal energy)
+- System must be simple and quick to use (minimal interface and easy-to-use app for fast communication)
 
 ---
 
-## Materiel Utilisé
-- Carte TBeam TTGO classic
-- Nucleo F411RE x2 ( utilisée seulement pour flasher du code sur les différents equipements)
+## Equipment Used
+- TBeam TTGO classic board
+- Nucleo F411RE x2 (used only to program the different devices)
 - Lora E5 Development Kit
 - WyresV2 x2
 
+## Meeting Notes
+### First Meeting
+- RP2040 module with low power consumption is a good idea
+- Connect to network when powered on
+- When starting, run algorithm and check network is working (communication possible + update network status)
+- Check battery level of all modules (warn user if too low) (if too complex, can add to API only)
+- Add extra LEDs if needed (GPIO ports available) // to check
+- Avoid duplicate messages
+- Focus a lot on reliability!
+- Phone app should be very simple (SMS style)
 
-## Notes Entretien
-### Premier Entretien
-- module rp2040 basse consommation pas mal
-- connexion au reseau à l'allumage
-- quand s'allume lance algo et verifie bon etat reseau (communication possible+ annonce de mise a jour réseau)
-- verifier état batterie des module du réseau (possibilité de prevenir si trop bas) ( si trop compliqué possibilité d'ajouter dans l'API du module sans le faire en physique)
-- Led non native a ajouter ( présence GPIO possible) // à voir
-- eviter redondance de message
-- exagerer sur robustesse !!!!!!!
-- app telephone tres simple ( sms )
 ---
-## Diagramme UML
+## UML Diagrams
 
-### Diagramme Use-Case
-![Diagramme d'Utilisation](./docs/usecase_diag.png)
+### Use-Case Diagram
+![Use Case Diagram](./docs/usecase_diag.png)
 
-### Diagramme de Séquence de l'envoie d'un message
-![Diagramme de Séquence](./docs/sequence_diag.png)
+### Message Sending Sequence Diagram
+![Sequence Diagram](./docs/sequence_diag.png)
 
-## Build Apres Clone
+## Building After Clone
 
-Pre-requis:
-- STM32CubeIDE installé (version recente)
-- Toolchain `GNU Tools for STM32` disponible dans l'IDE
+Prerequisites:
+- STM32CubeIDE installed (recent version)
+- `GNU Tools for STM32` toolchain available in the IDE
 
 ### Lora E5 Development Kit (`Loraprojet`)
 
-Ouverture du projet:
-1. Cloner le depot.
-2. Dans STM32CubeIDE: `File > Open Projects from File System...`
-3. Selectionner le dossier `Loraprojet`.
-4. Lancer un `Project > Clean` puis `Build`.
+Opening the project:
+1. Clone the repository.
+2. In STM32CubeIDE: `File > Open Projects from File System...`
+3. Select the `Loraprojet` folder.
+4. Run `Project > Clean` then `Build`.
 
 Notes:
-- Les fichiers binaires et objets de `Loraprojet/Debug` sont regeneres localement et ne sont pas necessaires dans le depot.
-- Le projet versionne les metadonnees Eclipse (`.project`, `.cproject`, `.settings`) pour garantir l'ouverture sur une autre machine.
+- Binary and object files in `Loraprojet/Debug` are generated locally and are not needed in the repository.
+- The project stores Eclipse configuration files (`.project`, `.cproject`, `.settings`) to ensure it opens correctly on another machine.
 
 ### WyresV2
 
-Ouverture du projet:
-1. Cloner le depot.
-2. Dans STM32CubeIDE: `File > Open Projects from File System...`
-3. Selectionner le dossier `WyresV2`.
-4. Lancer un `Project > Clean` puis `Build`.
+Opening the project:
+1. Clone the repository.
+2. In STM32CubeIDE: `File > Open Projects from File System...`
+3. Select the `WyresV2` folder.
+4. Run `Project > Clean` then `Build`.
 
 Notes:
-- Les fichiers de `WyresV2/Debug` sont generes localement et ne doivent pas etre relies pour partager le projet.
-- Les chemins de build portables sont portes par `.project/.cproject`; un `Clean` regenere les makefiles locaux.
+- Files in `WyresV2/Debug` are generated locally and should not be committed to share the project.
+- Portable build paths are handled by `.project/.cproject`; running `Clean` regenerates local makefiles.
 
 
 
