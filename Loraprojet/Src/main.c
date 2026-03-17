@@ -37,6 +37,7 @@ static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART_UART_Init(void);
 static void Radio_Init(void);
+static void Radio_Reapply_Config(void);
 
 static void OnTxDone(void);
 static void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr);
@@ -101,6 +102,7 @@ int main(void)
 
             if ((should_reply != 0U) && (tx_pending == 0U))
             {
+                Radio_Reapply_Config();
                 Radio.Standby();
                 Radio.Send((uint8_t *)"LORA_PONG", (uint8_t)strlen("LORA_PONG"));
                 tx_pending = 1U;
@@ -171,6 +173,7 @@ int main(void)
 
         if ((tx_pending == 0U) && ((now_ms - last_tx_ms) >= APP_TX_PERIOD_MS))
         {
+            Radio_Reapply_Config();
             /* Force a fresh TX cycle without relying on pending IRQ processing. */
             Radio.Standby();
             (void)snprintf(tx_msg, sizeof(tx_msg), "LORA_PING %lu", (unsigned long)tx_counter++);
@@ -223,6 +226,41 @@ static void Radio_Init(void)
     radio_events.RxError = OnRxError;
 
     Radio.Init(&radio_events);
+    Radio.SetChannel(RF_FREQUENCY_HZ);
+
+    Radio.SetTxConfig(MODEM_LORA,
+                      TX_OUTPUT_POWER_DBM,
+                      0,
+                      LORA_BANDWIDTH,
+                      LORA_SPREADING_FACTOR,
+                      LORA_CODINGRATE,
+                      LORA_PREAMBLE_LENGTH,
+                      false,
+                      true,
+                      0,
+                      0,
+                      false,
+                      TX_TIMEOUT_MS);
+
+    Radio.SetRxConfig(MODEM_LORA,
+                      LORA_BANDWIDTH,
+                      LORA_SPREADING_FACTOR,
+                      LORA_CODINGRATE,
+                      0,
+                      LORA_PREAMBLE_LENGTH,
+                      LORA_SYMBOL_TIMEOUT,
+                      false,
+                      0,
+                      true,
+                      0,
+                      0,
+                      false,
+                      true);
+}
+
+static void Radio_Reapply_Config(void)
+{
+    Radio.SetPublicNetwork(false);
     Radio.SetChannel(RF_FREQUENCY_HZ);
 
     Radio.SetTxConfig(MODEM_LORA,

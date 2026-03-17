@@ -88,6 +88,7 @@ typedef struct {
 #define APP_PING_PERIOD_MS              3000U
 #define APP_TX_GUARD_AFTER_RX_MS        1500U
 #define APP_PONG_DELAY_MS               120U
+#define APP_ENABLE_PONG_REPLY           0U
 
 static volatile uint32_t s_rx_count = 0U;
 static volatile uint32_t s_tx_count = 0U;
@@ -266,14 +267,7 @@ static bool payload_starts_with(const uint8_t *data, uint16_t len, const char *p
 
 static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr)
 {
-    bool known_frame;
-
     (void)from;
-
-    known_frame = payload_starts_with(data, len, "LORA_") || payload_starts_with(data, len, "WYRES_");
-    if (!known_frame) {
-        return;
-    }
 
     s_rx_count++;
     s_last_rx_ms = platform_millis();
@@ -290,7 +284,7 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
     uart1_write_printable(data, len);
     uart1_write_str("\"\r\n");
 
-    if (payload_starts_with(data, len, "LORA_PING")) {
+    if ((APP_ENABLE_PONG_REPLY != 0U) && payload_starts_with(data, len, "LORA_PING")) {
         s_pong_pending = 1U;
         s_pong_due_ms = platform_millis() + APP_PONG_DELAY_MS;
         uart1_write_str("TXQ: WYRES_PONG\r\n");
@@ -332,6 +326,7 @@ int main(void)
 
     uart1_init_115200();
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
+    uart1_write_str("BUILD: RX_ALL_SW_RECOV3\r\n");
     uart1_write_str("MODE: LORA INTEROP TEST\r\n");
 
     radio_ok = platform_radio_init(app_radio_rx_cb);
@@ -340,6 +335,8 @@ int main(void)
         uart1_write_u32((uint32_t)platform_radio_version());
         uart1_write_str(" profile=");
         uart1_write_u32((uint32_t)platform_radio_profile());
+        uart1_write_str(" spiCfg=");
+        uart1_write_u32((uint32_t)platform_radio_probe_af(0U));
         if ((platform_radio_version() != 0x12U) && (platform_radio_version() != 0x22U)) {
             uart1_write_str(" (fallback)");
         }
