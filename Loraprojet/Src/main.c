@@ -38,7 +38,6 @@ static void MX_GPIO_Init(void);
 static void MX_USART_UART_Init(void);
 static void Radio_Init(void);
 static void Radio_Reapply_Config(void);
-static void Radio_HardResync(void);
 
 static void OnTxDone(void);
 static void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr);
@@ -71,6 +70,11 @@ int main(void)
     MX_SUBGHZ_Init();
 
     Uart_Log("BOOT LORAPROJET\r\n");
+#if (RBI_RF_SW_PROFILE == RBI_RF_SW_PROFILE_WYRES_REVC)
+    Uart_Log("RFSW PROFILE: WYRES_REVC\r\n");
+#else
+    Uart_Log("RFSW PROFILE: LORAE5\r\n");
+#endif
 
     Radio_Init();
     Radio.SetPublicNetwork(false);
@@ -103,7 +107,6 @@ int main(void)
 
             if ((should_reply != 0U) && (tx_pending == 0U))
             {
-                Radio_HardResync();
                 Radio_Reapply_Config();
                 Radio.Standby();
                 Radio.Send((uint8_t *)"LORA_PONG", (uint8_t)strlen("LORA_PONG"));
@@ -175,7 +178,6 @@ int main(void)
 
         if ((tx_pending == 0U) && ((now_ms - last_tx_ms) >= APP_TX_PERIOD_MS))
         {
-            Radio_HardResync();
             Radio_Reapply_Config();
             /* Force a fresh TX cycle without relying on pending IRQ processing. */
             Radio.Standby();
@@ -294,18 +296,6 @@ static void Radio_Reapply_Config(void)
                       0,
                       false,
                       true);
-}
-
-static void Radio_HardResync(void)
-{
-    /*
-     * Recover radio state to a known-good baseline before a new TX cycle.
-     * This mirrors the "fresh boot" behavior that has been the most reliable.
-     */
-    Radio.Sleep();
-    HAL_Delay(3);
-    Radio_Init();
-    Radio.SetPublicNetwork(false);
 }
 
 static void OnTxDone(void)
