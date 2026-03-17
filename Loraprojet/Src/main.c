@@ -20,7 +20,7 @@
 #define TX_TIMEOUT_MS          3000U
 #define APP_TX_PERIOD_MS       2000U
 #define APP_TX_RECOVER_MS      1200U
-#define APP_TX_ONLY_BEACON     1U
+#define APP_TX_ONLY_BEACON     0U
 #define APP_RADIO_IRQ_IN_ISR   1U
 
 static UART_HandleTypeDef huart1;
@@ -81,7 +81,7 @@ int main(void)
     MX_SUBGHZ_Init();
 
     Uart_Log("BOOT LORAPROJET\r\n");
-    Uart_Log("MODE: TX STREAM\r\n");
+    Uart_Log("MODE: TX/RX INTEROP\r\n");
     Uart_Log("IRQ MODE: ISR_DIRECT\r\n");
     Uart_Log("BUILD: " __DATE__ " " __TIME__ "\r\n");
     Uart_Log("RFSW PROFILE ID: " STR(RBI_RF_SW_PROFILE) "\r\n");
@@ -119,6 +119,11 @@ int main(void)
             Uart_Log("RX: ");
             Uart_LogText(rx_buffer, rx_size);
             Uart_Log("\r\n");
+
+            if (PayloadStartsWith(rx_buffer, rx_size, "WYRES_PONG") != 0U)
+            {
+                Uart_Log("RX ACK: WYRES_PONG\r\n");
+            }
 
             HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 

@@ -88,7 +88,7 @@ typedef struct {
 #define APP_PING_PERIOD_MS              3000U
 #define APP_TX_GUARD_AFTER_RX_MS        1500U
 #define APP_PONG_DELAY_MS               120U
-#define APP_ENABLE_PONG_REPLY           0U
+#define APP_ENABLE_PONG_REPLY           1U
 
 static volatile uint32_t s_rx_count = 0U;
 static volatile uint32_t s_tx_count = 0U;
@@ -326,7 +326,7 @@ int main(void)
 
     uart1_init_115200();
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: RX_STREAM_REARM_SOFT\r\n");
+    uart1_write_str("BUILD: RX_STREAM_PONG_REPLY\r\n");
     uart1_write_str("MODE: LORA INTEROP TEST\r\n");
 
     radio_ok = platform_radio_init(app_radio_rx_cb);
