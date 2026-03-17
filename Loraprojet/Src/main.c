@@ -21,6 +21,7 @@
 #define APP_TX_PERIOD_MS       2000U
 #define APP_TX_RECOVER_MS      1200U
 #define APP_TX_ONLY_BEACON     1U
+#define APP_RADIO_IRQ_IN_ISR   1U
 
 static UART_HandleTypeDef huart1;
 static UART_HandleTypeDef huart2;
@@ -81,6 +82,7 @@ int main(void)
 
     Uart_Log("BOOT LORAPROJET\r\n");
     Uart_Log("MODE: TX STREAM\r\n");
+    Uart_Log("IRQ MODE: ISR_DIRECT\r\n");
     Uart_Log("BUILD: " __DATE__ " " __TIME__ "\r\n");
     Uart_Log("RFSW PROFILE ID: " STR(RBI_RF_SW_PROFILE) "\r\n");
 #if (RBI_RF_SW_PROFILE == RBI_RF_SW_PROFILE_WYRES_REVC)
@@ -99,8 +101,13 @@ int main(void)
     {
         now_ms = HAL_GetTick();
 
-        /* Required by SubGHz PHY stack to dispatch radio callbacks. */
+        /*
+         * Radio IRQ is already dispatched directly from SUBGHZ IRQ callback.
+         * Re-processing here may replay stale IRQ state and desync TX flow.
+         */
+#if (APP_RADIO_IRQ_IN_ISR == 0U)
         Radio.IrqProcess();
+#endif
         TimerProcess();
 
         if (radio_rx_done != 0U)
