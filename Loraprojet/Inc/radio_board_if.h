@@ -28,9 +28,11 @@
 #define RBI_RF_SW_PROFILE_LORAE5       1
 #define RBI_RF_SW_PROFILE_WYRES_REVC   2
 
-#ifndef RBI_RF_SW_PROFILE
+/*
+ * Loraprojet targets LoRa-E5 devkit.
+ * Keep this fixed to avoid accidentally flashing a Wyres RF profile.
+ */
 #define RBI_RF_SW_PROFILE RBI_RF_SW_PROFILE_LORAE5
-#endif
 
 typedef enum
 {

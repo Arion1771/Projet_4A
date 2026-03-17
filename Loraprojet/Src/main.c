@@ -1,10 +1,14 @@
 #include "main.h"
 #include "radio.h"
+#include "radio_board_if.h"
 #include "subghz.h"
 #include "timer.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
 
 #define RF_FREQUENCY_HZ        868000000U
 #define TX_OUTPUT_POWER_DBM    14
@@ -70,6 +74,8 @@ int main(void)
     MX_SUBGHZ_Init();
 
     Uart_Log("BOOT LORAPROJET\r\n");
+    Uart_Log("BUILD: " __DATE__ " " __TIME__ "\r\n");
+    Uart_Log("RFSW PROFILE ID: " STR(RBI_RF_SW_PROFILE) "\r\n");
 #if (RBI_RF_SW_PROFILE == RBI_RF_SW_PROFILE_WYRES_REVC)
     Uart_Log("RFSW PROFILE: WYRES_REVC\r\n");
 #else
