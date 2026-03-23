@@ -38,6 +38,7 @@
 #define APP_JOIN_ACK_REPEAT    3U
 #define APP_JOIN_ACK_DELAY_MS  120U
 #define APP_JOIN_ACK_GAP_MS    120U
+#define APP_NODE_OFFLINE_MS    12000U
 #define APP_ACK_TIMEOUT_MS     700U
 #define APP_ACK_MAX_RETRIES    3U
 /* 2 = USART2 (PA2/PA3, usually ST-LINK VCP), 1 = USART1 (PB6/PB7) */
@@ -75,6 +76,8 @@ typedef struct
     uint8_t used;
     uint16_t nonce;
     uint16_t node_id;
+    uint32_t last_seen_ms;
+    uint8_t online;
 } app_join_entry_t;
 
 typedef struct
@@ -192,6 +195,8 @@ static uint8_t App_QueueFrame(const app_frame_t *frame);
 static uint8_t App_JoinIdInUse(uint16_t node_id);
 static uint16_t App_JoinAllocateId(void);
 static uint16_t App_JoinFindOrAssign(uint16_t nonce);
+static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms);
+static void App_CheckNodeDisconnects(uint32_t now_ms);
 static void App_PrintNodes(void);
 
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms);
@@ -318,6 +323,7 @@ int main(void)
 
         App_PollUart(now_ms);
         App_ProcessPendingAck(now_ms);
+        App_CheckNodeDisconnects(now_ms);
         App_ProcessJoinAckBurst(now_ms);
         App_TxPump();
     }
@@ -625,6 +631,7 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce)
     uint8_t i;
     int8_t free_idx = -1;
     uint16_t id;
+    uint32_t now_ms = HAL_GetTick();
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
     {
@@ -632,6 +639,13 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce)
         {
             if (join_table[i].nonce == nonce)
             {
+                if (join_table[i].online == 0U)
+                {
+                    Uart_LogTimedf("INFO: node %u reconnected\r\n",
+                                   (unsigned)join_table[i].node_id);
+                }
+                join_table[i].last_seen_ms = now_ms;
+                join_table[i].online = 1U;
                 return join_table[i].node_id;
             }
         }
@@ -655,13 +669,62 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce)
     join_table[(uint8_t)free_idx].used = 1U;
     join_table[(uint8_t)free_idx].nonce = nonce;
     join_table[(uint8_t)free_idx].node_id = id;
+    join_table[(uint8_t)free_idx].last_seen_ms = now_ms;
+    join_table[(uint8_t)free_idx].online = 1U;
     return id;
+}
+
+static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
+{
+    uint8_t i;
+
+    if ((node_id == APP_NODE_UNASSIGNED) ||
+        (node_id == APP_BROADCAST_ID) ||
+        (node_id == APP_COORDINATOR_ID))
+    {
+        return;
+    }
+
+    for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
+    {
+        if (join_table[i].used && (join_table[i].node_id == node_id))
+        {
+            if (join_table[i].online == 0U)
+            {
+                Uart_LogTimedf("INFO: node %u reconnected\r\n", (unsigned)node_id);
+            }
+            join_table[i].last_seen_ms = now_ms;
+            join_table[i].online = 1U;
+            return;
+        }
+    }
+}
+
+static void App_CheckNodeDisconnects(uint32_t now_ms)
+{
+    uint8_t i;
+
+    for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
+    {
+        if (!join_table[i].used || (join_table[i].online == 0U))
+        {
+            continue;
+        }
+
+        if ((now_ms - join_table[i].last_seen_ms) >= APP_NODE_OFFLINE_MS)
+        {
+            join_table[i].online = 0U;
+            Uart_LogTimedf("WARN: node %u disconnected\r\n",
+                           (unsigned)join_table[i].node_id);
+        }
+    }
 }
 
 static void App_PrintNodes(void)
 {
     uint8_t i;
     uint8_t found = 0U;
+    uint32_t now_ms = HAL_GetTick();
 
     Uart_Log("Known nodes: ");
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
@@ -669,9 +732,11 @@ static void App_PrintNodes(void)
         if (join_table[i].used)
         {
             found = 1U;
-            Uart_Logf("[id=%u nonce=%u] ",
+            Uart_Logf("[id=%u nonce=%u state=%s ageMs=%lu] ",
                       (unsigned)join_table[i].node_id,
-                      (unsigned)join_table[i].nonce);
+                      (unsigned)join_table[i].nonce,
+                      (join_table[i].online != 0U) ? "online" : "offline",
+                      (unsigned long)(now_ms - join_table[i].last_seen_ms));
         }
     }
     if (found == 0U)
@@ -908,6 +973,10 @@ static void App_HandleFrame(const app_frame_t *frame, int16_t rssi, int8_t snr)
         App_ProcessAckFrame(frame);
         break;
 
+    case APP_MSG_HEARTBEAT:
+        /* Presence is tracked from src_id in App_HandleRxRaw. */
+        break;
+
     default:
         break;
     }
@@ -934,6 +1003,7 @@ static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int
         return;
     }
 
+    App_MarkNodeSeen(frame.src_id, HAL_GetTick());
     App_HandleFrame(&frame, rssi, snr);
 }
 

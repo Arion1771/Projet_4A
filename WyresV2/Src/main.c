@@ -104,6 +104,8 @@ typedef struct {
 #define APP_ACK_MAX_RETRIES       3U
 #define APP_RETRY_BACKOFF_MS      120U
 #define APP_JOIN_RETRY_MS         2000U
+#define APP_HEARTBEAT_PERIOD_MS   3000U
+#define APP_NODE_OFFLINE_MS       12000U
 #define APP_LOOP_STEP_MS          20U
 #define APP_STATUS_PERIOD_MS      1000U
 
@@ -133,6 +135,8 @@ typedef struct {
     bool used;
     uint16_t nonce;
     uint16_t node_id;
+    uint32_t last_seen_ms;
+    bool online;
 } app_join_entry_t;
 
 static volatile uint32_t s_rx_count = 0U;
@@ -151,6 +155,7 @@ static uint16_t s_next_seq = 1U;
 static uint16_t s_join_nonce = 0U;
 static uint16_t s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
 static uint32_t s_last_join_req_ms = 0U;
+static uint32_t s_last_heartbeat_ms = 0U;
 static bool s_joined = false;
 
 static app_pending_tx_t s_pending_tx;
@@ -159,6 +164,8 @@ static app_join_entry_t s_join_table[APP_JOIN_TABLE_SIZE];
 static uint8_t s_rx_track_insert_idx = 0U;
 static char s_uart_line[APP_UART_LINE_MAX];
 static uint8_t s_uart_line_len = 0U;
+
+static void app_print_status(uint32_t now_ms);
 
 static void delay_cycles(volatile uint32_t cycles)
 {
@@ -597,7 +604,93 @@ static uint16_t app_join_find_or_assign(uint16_t nonce)
     s_join_table[(uint8_t)free_idx].used = true;
     s_join_table[(uint8_t)free_idx].nonce = nonce;
     s_join_table[(uint8_t)free_idx].node_id = assigned_id;
+    s_join_table[(uint8_t)free_idx].last_seen_ms = platform_millis();
+    s_join_table[(uint8_t)free_idx].online = true;
     return assigned_id;
+}
+
+static void app_mark_node_seen(uint16_t node_id, uint32_t now_ms)
+{
+    uint8_t i;
+
+    if (APP_COORDINATOR_MODE == 0U) {
+        return;
+    }
+
+    if ((node_id == APP_NODE_ID_UNASSIGNED) ||
+        (node_id == APP_BROADCAST_ID) ||
+        (node_id == APP_COORDINATOR_ID)) {
+        return;
+    }
+
+    for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++) {
+        if (s_join_table[i].used && (s_join_table[i].node_id == node_id)) {
+            if (!s_join_table[i].online) {
+                uart1_write_str("INFO: node ");
+                uart1_write_u32((uint32_t)node_id);
+                uart1_write_str(" reconnected\r\n");
+            }
+            s_join_table[i].last_seen_ms = now_ms;
+            s_join_table[i].online = true;
+            return;
+        }
+    }
+}
+
+static void app_check_node_disconnects(uint32_t now_ms)
+{
+    uint8_t i;
+
+    if (APP_COORDINATOR_MODE == 0U) {
+        return;
+    }
+
+    for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++) {
+        if (!s_join_table[i].used || !s_join_table[i].online) {
+            continue;
+        }
+
+        if ((now_ms - s_join_table[i].last_seen_ms) >= APP_NODE_OFFLINE_MS) {
+            s_join_table[i].online = false;
+            uart1_write_str("WARN: node ");
+            uart1_write_u32((uint32_t)s_join_table[i].node_id);
+            uart1_write_str(" disconnected\r\n");
+        }
+    }
+}
+
+static void app_print_nodes(void)
+{
+    uint8_t i;
+    bool found = false;
+    uint32_t now_ms = platform_millis();
+
+    if (APP_COORDINATOR_MODE == 0U) {
+        uart1_write_str("nodes: only available in coordinator mode\r\n");
+        return;
+    }
+
+    uart1_write_str("Known nodes: ");
+    for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++) {
+        if (!s_join_table[i].used) {
+            continue;
+        }
+        found = true;
+        uart1_write_str("[id=");
+        uart1_write_u32((uint32_t)s_join_table[i].node_id);
+        uart1_write_str(" nonce=");
+        uart1_write_u32((uint32_t)s_join_table[i].nonce);
+        uart1_write_str(" state=");
+        uart1_write_str(s_join_table[i].online ? "online" : "offline");
+        uart1_write_str(" ageMs=");
+        uart1_write_u32((uint32_t)(now_ms - s_join_table[i].last_seen_ms));
+        uart1_write_str("] ");
+    }
+
+    if (!found) {
+        uart1_write_str("none");
+    }
+    uart1_write_str("\r\n");
 }
 
 static void app_send_ack(uint16_t dst_id, uint16_t ack_seq)
@@ -730,6 +823,7 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     wyresv2_frame_t reply;
     uint16_t nonce;
     uint16_t assigned_id;
+    uint32_t now_ms;
 
     if ((frame == NULL) || (APP_COORDINATOR_MODE == 0U) || (frame->payload_len < 2U)) {
         return;
@@ -740,6 +834,8 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     if (assigned_id == APP_NODE_ID_UNASSIGNED) {
         return;
     }
+    now_ms = platform_millis();
+    app_mark_node_seen(assigned_id, now_ms);
 
     app_frame_init(&reply, MSG_JOIN_ACK, s_node_id, APP_BROADCAST_ID, s_next_seq++);
     reply.payload_len = 4U;
@@ -777,6 +873,28 @@ static void app_send_join_request(uint32_t now_ms)
         uart1_write_str("JOIN_REQ nonce=");
         uart1_write_u32((uint32_t)s_join_nonce);
         uart1_write_str("\r\n");
+    }
+}
+
+static void app_send_heartbeat(uint32_t now_ms)
+{
+    wyresv2_frame_t hb;
+    uint16_t dst_id;
+
+    if (!s_joined || (s_node_id == APP_NODE_ID_UNASSIGNED)) {
+        return;
+    }
+
+    if ((now_ms - s_last_heartbeat_ms) < APP_HEARTBEAT_PERIOD_MS) {
+        return;
+    }
+
+    dst_id = (APP_COORDINATOR_MODE != 0U) ? APP_BROADCAST_ID : APP_COORDINATOR_ID;
+    app_frame_init(&hb, MSG_HEARTBEAT, s_node_id, dst_id, s_next_seq++);
+    hb.payload_len = 0U;
+
+    if (app_send_frame(&hb)) {
+        s_last_heartbeat_ms = now_ms;
     }
 }
 
@@ -864,6 +982,8 @@ static void app_print_help(void)
 {
     uart1_write_str("Commands:\r\n");
     uart1_write_str("  id                -> show current node id\r\n");
+    uart1_write_str("  nodes             -> list joined nodes (coordinator only)\r\n");
+    uart1_write_str("  status            -> print local radio counters now\r\n");
     uart1_write_str("  dst <id>          -> set default destination id\r\n");
     uart1_write_str("  send <id> <text>  -> send reliable text with ACK/retry\r\n");
     uart1_write_str("  broadcast <text>  -> send broadcast text (no ACK)\r\n");
@@ -940,6 +1060,16 @@ static void app_handle_uart_line(char *line, uint32_t now_ms)
 
     if (strcmp(cursor, "id") == 0) {
         app_print_identity();
+        return;
+    }
+
+    if (strcmp(cursor, "nodes") == 0) {
+        app_print_nodes();
+        return;
+    }
+
+    if (strcmp(cursor, "status") == 0) {
+        app_print_status(now_ms);
         return;
     }
 
@@ -1046,6 +1176,13 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
         return;
     }
 
+    if ((APP_COORDINATOR_MODE != 0U) &&
+        (frame.src_id != APP_NODE_ID_UNASSIGNED) &&
+        (frame.src_id != APP_BROADCAST_ID) &&
+        (frame.src_id != APP_COORDINATOR_ID)) {
+        app_mark_node_seen(frame.src_id, platform_millis());
+    }
+
     switch (frame.type) {
     case MSG_JOIN_REQ:
         if ((APP_COORDINATOR_MODE != 0U) &&
@@ -1070,6 +1207,10 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
         }
         break;
 
+    case MSG_HEARTBEAT:
+        /* Presence is handled above via src_id tracking. */
+        break;
+
     default:
         break;
     }
@@ -1083,6 +1224,8 @@ static void app_periodic(uint32_t now_ms)
         }
     }
 
+    app_send_heartbeat(now_ms);
+    app_check_node_disconnects(now_ms);
     app_pending_process(now_ms);
 }
 
@@ -1141,6 +1284,7 @@ static void app_init_identity(void)
     s_next_seq = 1U;
     s_join_nonce = app_read_uid_nonce();
     s_last_join_req_ms = 0U;
+    s_last_heartbeat_ms = 0U;
     s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
 
     if (APP_FIXED_NODE_ID != 0U) {
@@ -1174,7 +1318,6 @@ int main(void)
 {
     uint32_t i;
     uint32_t now_ms = 0U;
-    uint32_t last_status_ms = 0U;
     bool radio_ok;
 
     system_clock_init_hsi_16mhz();
@@ -1256,11 +1399,6 @@ int main(void)
         if (radio_ok) {
             app_poll_uart(now_ms);
             app_periodic(now_ms);
-        }
-
-        if ((now_ms - last_status_ms) >= APP_STATUS_PERIOD_MS) {
-            app_print_status(now_ms);
-            last_status_ms = now_ms;
         }
 
         now_ms += APP_LOOP_STEP_MS;
