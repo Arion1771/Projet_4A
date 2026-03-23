@@ -35,8 +35,16 @@
 #define APP_JOIN_TABLE_SIZE    16U
 #define APP_JOIN_FIRST_ID      2U
 #define APP_JOIN_LAST_ID       250U
+#define APP_JOIN_ACK_REPEAT    3U
+#define APP_JOIN_ACK_DELAY_MS  120U
+#define APP_JOIN_ACK_GAP_MS    120U
 #define APP_ACK_TIMEOUT_MS     700U
 #define APP_ACK_MAX_RETRIES    3U
+/* 2 = USART2 (PA2/PA3, usually ST-LINK VCP), 1 = USART1 (PB6/PB7) */
+#define APP_CONSOLE_UART       2U
+#define APP_UART_MIRROR_BOTH   1U
+#define APP_UART_ECHO          0U
+#define APP_UART_AUTOSUBMIT_MS 180U
 
 typedef enum
 {
@@ -86,6 +94,15 @@ typedef struct
     uint8_t raw[APP_MAX_FRAME_LEN];
 } app_pending_ack_t;
 
+typedef struct
+{
+    uint8_t active;
+    uint16_t nonce;
+    uint16_t assigned_id;
+    uint8_t repeats_left;
+    uint32_t next_tx_ms;
+} app_join_ack_burst_t;
+
 static UART_HandleTypeDef huart1;
 static UART_HandleTypeDef huart2;
 static uint8_t uart1_ready = 0U;
@@ -113,10 +130,13 @@ static uint8_t tx_queue_tail = 0U;
 static uint8_t tx_queue_count = 0U;
 
 static app_pending_ack_t pending_ack;
+static app_join_ack_burst_t pending_join_ack;
 static app_join_entry_t join_table[APP_JOIN_TABLE_SIZE];
 static uint16_t next_assigned_id = APP_JOIN_FIRST_ID;
 static uint16_t next_seq = 1U;
 static uint16_t default_dst_id = APP_BROADCAST_ID;
+static uint8_t uart_rx_seen = 0U;
+static uint32_t uart_last_rx_char_ms = 0U;
 
 static char uart_line[APP_UART_LINE_MAX];
 static uint8_t uart_line_len = 0U;
@@ -154,6 +174,7 @@ static void Uart_LogText(const uint8_t *data, uint16_t size);
 static void Uart_Logf(const char *fmt, ...);
 static void Uart_LogTimedf(const char *fmt, ...);
 static uint8_t Uart_TryReadChar(char *out_char);
+static uint8_t Uart_TryReadFrom(UART_HandleTypeDef *huart, char *out_char);
 
 static char *SkipSpaces(char *p);
 static uint8_t ParseU16(char **cursor, uint16_t *out_value);
@@ -176,6 +197,8 @@ static void App_PrintNodes(void);
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms);
 static void App_ProcessPendingAck(uint32_t now_ms);
 static void App_ProcessAckFrame(const app_frame_t *frame);
+static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint32_t now_ms);
+static void App_ProcessJoinAckBurst(uint32_t now_ms);
 
 static void App_HandleJoinReq(const app_frame_t *frame);
 static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr);
@@ -185,6 +208,7 @@ static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int
 static void App_SendText(uint16_t dst_id, const char *text, uint32_t now_ms);
 static void App_PrintHelp(void);
 static void App_HandleUartLine(char *line, uint32_t now_ms);
+static void App_SubmitUartLine(uint32_t now_ms);
 static void App_PollUart(uint32_t now_ms);
 
 int main(void)
@@ -199,12 +223,18 @@ int main(void)
     MX_SUBGHZ_Init();
 
     memset(&pending_ack, 0, sizeof(pending_ack));
+    memset(&pending_join_ack, 0, sizeof(pending_join_ack));
     memset(join_table, 0, sizeof(join_table));
 
     Uart_Log("BOOT LORAPROJET\r\n");
     Uart_Log("MODE: CARD1 COORDINATOR (LORAE5)\r\n");
     Uart_Log("IRQ MODE: ISR_DIRECT\r\n");
     Uart_Log("BUILD: " __DATE__ " " __TIME__ "\r\n");
+#if (APP_CONSOLE_UART == 2U)
+    Uart_Log("UART CONSOLE: USART2 (PA2/PA3)\r\n");
+#else
+    Uart_Log("UART CONSOLE: USART1 (PB6/PB7)\r\n");
+#endif
     Uart_Log("RFSW PROFILE ID: " STR(RBI_RF_SW_PROFILE) "\r\n");
 #if (RBI_RF_SW_PROFILE == RBI_RF_SW_PROFILE_WYRES_REVC)
     Uart_Log("RFSW PROFILE: WYRES_REVC\r\n");
@@ -212,6 +242,8 @@ int main(void)
     Uart_Log("RFSW PROFILE: LORAE5\r\n");
 #endif
     Uart_Log("COORDINATOR NODE ID: 1\r\n");
+    Uart_Log("SERIAL: type text + Enter (or short pause) to send on LoRa\r\n");
+    Uart_Log("SERIAL: commands available via help\r\n");
 
     Radio_Init();
     Radio.SetPublicNetwork(false);
@@ -286,6 +318,7 @@ int main(void)
 
         App_PollUart(now_ms);
         App_ProcessPendingAck(now_ms);
+        App_ProcessJoinAckBurst(now_ms);
         App_TxPump();
     }
 }
@@ -721,11 +754,59 @@ static void App_ProcessAckFrame(const app_frame_t *frame)
     }
 }
 
-static void App_HandleJoinReq(const app_frame_t *frame)
+static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint32_t now_ms)
+{
+    pending_join_ack.active = 1U;
+    pending_join_ack.nonce = nonce;
+    pending_join_ack.assigned_id = assigned_id;
+    pending_join_ack.repeats_left = APP_JOIN_ACK_REPEAT;
+    pending_join_ack.next_tx_ms = now_ms + APP_JOIN_ACK_DELAY_MS;
+}
+
+static void App_ProcessJoinAckBurst(uint32_t now_ms)
 {
     app_frame_t reply;
+
+    if (pending_join_ack.active == 0U)
+    {
+        return;
+    }
+
+    if ((int32_t)(now_ms - pending_join_ack.next_tx_ms) < 0)
+    {
+        return;
+    }
+
+    App_InitFrame(&reply, APP_MSG_JOIN_ACK, APP_COORDINATOR_ID, APP_BROADCAST_ID, next_seq++);
+    reply.payload_len = 4U;
+    reply.payload[0] = (uint8_t)(pending_join_ack.nonce & 0xFFU);
+    reply.payload[1] = (uint8_t)((pending_join_ack.nonce >> 8) & 0xFFU);
+    reply.payload[2] = (uint8_t)(pending_join_ack.assigned_id & 0xFFU);
+    reply.payload[3] = (uint8_t)((pending_join_ack.assigned_id >> 8) & 0xFFU);
+
+    if (!App_QueueFrame(&reply))
+    {
+        pending_join_ack.next_tx_ms = now_ms + 30U;
+        return;
+    }
+
+    stat_join_ack++;
+    pending_join_ack.repeats_left--;
+    if (pending_join_ack.repeats_left == 0U)
+    {
+        pending_join_ack.active = 0U;
+    }
+    else
+    {
+        pending_join_ack.next_tx_ms = now_ms + APP_JOIN_ACK_GAP_MS;
+    }
+}
+
+static void App_HandleJoinReq(const app_frame_t *frame)
+{
     uint16_t nonce;
     uint16_t assigned_id;
+    uint32_t now_ms;
 
     if ((frame == NULL) || (frame->payload_len < 2U))
     {
@@ -745,20 +826,16 @@ static void App_HandleJoinReq(const app_frame_t *frame)
     }
 
     stat_join_req++;
-    App_InitFrame(&reply, APP_MSG_JOIN_ACK, APP_COORDINATOR_ID, APP_BROADCAST_ID, next_seq++);
-    reply.payload_len = 4U;
-    reply.payload[0] = (uint8_t)(nonce & 0xFFU);
-    reply.payload[1] = (uint8_t)((nonce >> 8) & 0xFFU);
-    reply.payload[2] = (uint8_t)(assigned_id & 0xFFU);
-    reply.payload[3] = (uint8_t)((assigned_id >> 8) & 0xFFU);
+    Uart_LogTimedf("JOIN_REQ src=%u nonce=%u\r\n",
+                   (unsigned)frame->src_id,
+                   (unsigned)nonce);
 
-    if (App_QueueFrame(&reply))
-    {
-        stat_join_ack++;
-        Uart_Logf("JOIN_ACK nonce=%u -> id=%u\r\n",
-                  (unsigned)nonce,
-                  (unsigned)assigned_id);
-    }
+    now_ms = HAL_GetTick();
+    App_ScheduleJoinAck(nonce, assigned_id, now_ms);
+    Uart_LogTimedf("JOIN_ACK scheduled nonce=%u -> id=%u x%u\r\n",
+                   (unsigned)nonce,
+                   (unsigned)assigned_id,
+                   (unsigned)APP_JOIN_ACK_REPEAT);
 }
 
 static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr)
@@ -938,6 +1015,7 @@ static void App_PrintHelp(void)
     Uart_Log("  broadcast <text>    -> send broadcast text\r\n");
     Uart_Log("  help                -> show this help\r\n");
     Uart_Log("  <text>              -> send to default destination\r\n");
+    Uart_Log("Note: lines auto-submit after a short pause.\r\n");
 }
 
 static void App_HandleUartLine(char *line, uint32_t now_ms)
@@ -1039,16 +1117,17 @@ static void App_PollUart(uint32_t now_ms)
 
     while (Uart_TryReadChar(&c))
     {
+        uart_last_rx_char_ms = now_ms;
+
+        if (uart_rx_seen == 0U)
+        {
+            uart_rx_seen = 1U;
+            Uart_Log("\r\nUART RX OK\r\n> ");
+        }
+
         if ((c == '\r') || (c == '\n'))
         {
-            if (uart_line_len > 0U)
-            {
-                uart_line[uart_line_len] = '\0';
-                Uart_Log("\r\n");
-                App_HandleUartLine(uart_line, now_ms);
-                uart_line_len = 0U;
-                Uart_Log("> ");
-            }
+            App_SubmitUartLine(now_ms);
             continue;
         }
 
@@ -1057,7 +1136,9 @@ static void App_PollUart(uint32_t now_ms)
             if (uart_line_len > 0U)
             {
                 uart_line_len--;
+#if (APP_UART_ECHO != 0U)
                 Uart_Log("\b \b");
+#endif
             }
             continue;
         }
@@ -1067,10 +1148,34 @@ static void App_PollUart(uint32_t now_ms)
             if (uart_line_len < (APP_UART_LINE_MAX - 1U))
             {
                 uart_line[uart_line_len++] = c;
+#if (APP_UART_ECHO != 0U)
                 Uart_TransmitAll((const uint8_t *)&c, 1U);
+#endif
             }
         }
     }
+
+    if ((uart_line_len > 0U) &&
+        ((now_ms - uart_last_rx_char_ms) >= APP_UART_AUTOSUBMIT_MS))
+    {
+        App_SubmitUartLine(now_ms);
+    }
+}
+
+static void App_SubmitUartLine(uint32_t now_ms)
+{
+    if (uart_line_len == 0U)
+    {
+        return;
+    }
+
+    uart_line[uart_line_len] = '\0';
+#if (APP_UART_ECHO != 0U)
+    Uart_Log("\r\n");
+#endif
+    App_HandleUartLine(uart_line, now_ms);
+    uart_line_len = 0U;
+    Uart_Log("> ");
 }
 
 static void Radio_Init(void)
@@ -1274,45 +1379,113 @@ static void Uart_TransmitAll(const uint8_t *buf, uint16_t len)
         return;
     }
 
-    if (uart1_ready != 0U)
-    {
-        (void)HAL_UART_Transmit(&huart1, (uint8_t *)buf, len, 100U);
-    }
-
+#if (APP_CONSOLE_UART == 2U)
     if (uart2_ready != 0U)
     {
         (void)HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 100U);
     }
+#if (APP_UART_MIRROR_BOTH != 0U)
+    if (uart1_ready != 0U)
+    {
+        (void)HAL_UART_Transmit(&huart1, (uint8_t *)buf, len, 100U);
+    }
+#else
+    /* Fallback if preferred console UART is not available */
+    if ((uart2_ready == 0U) && (uart1_ready != 0U))
+    {
+        (void)HAL_UART_Transmit(&huart1, (uint8_t *)buf, len, 100U);
+    }
+#endif
+#else
+    if (uart1_ready != 0U)
+    {
+        (void)HAL_UART_Transmit(&huart1, (uint8_t *)buf, len, 100U);
+    }
+#if (APP_UART_MIRROR_BOTH != 0U)
+    if (uart2_ready != 0U)
+    {
+        (void)HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 100U);
+    }
+#else
+    /* Fallback if preferred console UART is not available */
+    if ((uart1_ready == 0U) && (uart2_ready != 0U))
+    {
+        (void)HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 100U);
+    }
+#endif
+#endif
 }
 
 static uint8_t Uart_TryReadChar(char *out_char)
 {
-    HAL_StatusTypeDef st;
-    uint8_t c;
-
     if (out_char == NULL)
     {
         return 0U;
     }
 
-    if (uart1_ready != 0U)
+    /*
+     * Robust non-blocking RX path:
+     * read directly from UART registers to avoid HAL state edge cases with timeout=0 polling.
+     */
+#if (APP_CONSOLE_UART == 2U)
+    if (Uart_TryReadFrom(&huart2, out_char) != 0U)
     {
-        st = HAL_UART_Receive(&huart1, &c, 1U, 0U);
-        if (st == HAL_OK)
-        {
-            *out_char = (char)c;
-            return 1U;
-        }
+        return 1U;
+    }
+    if (Uart_TryReadFrom(&huart1, out_char) != 0U)
+    {
+        return 1U;
+    }
+#else
+    if (Uart_TryReadFrom(&huart1, out_char) != 0U)
+    {
+        return 1U;
+    }
+    if (Uart_TryReadFrom(&huart2, out_char) != 0U)
+    {
+        return 1U;
+    }
+#endif
+
+    return 0U;
+}
+
+static uint8_t Uart_TryReadFrom(UART_HandleTypeDef *huart, char *out_char)
+{
+    USART_TypeDef *uartx;
+    uint32_t isr;
+
+    if ((huart == NULL) || (out_char == NULL) || (huart->Instance == NULL))
+    {
+        return 0U;
     }
 
-    if (uart2_ready != 0U)
+    if ((huart->Instance == USART1) && (uart1_ready == 0U))
     {
-        st = HAL_UART_Receive(&huart2, &c, 1U, 0U);
-        if (st == HAL_OK)
-        {
-            *out_char = (char)c;
-            return 1U;
-        }
+        return 0U;
+    }
+    if ((huart->Instance == USART2) && (uart2_ready == 0U))
+    {
+        return 0U;
+    }
+
+    uartx = huart->Instance;
+    isr = uartx->ISR;
+
+    /* Clear sticky RX error flags so reception keeps working after glitches. */
+    if ((isr & (USART_ISR_ORE | USART_ISR_NE | USART_ISR_FE | USART_ISR_PE)) != 0U)
+    {
+        uartx->ICR = USART_ICR_ORECF | USART_ICR_NECF | USART_ICR_FECF | USART_ICR_PECF;
+    }
+
+#if defined(USART_ISR_RXNE_RXFNE)
+    if ((uartx->ISR & USART_ISR_RXNE_RXFNE) != 0U)
+#else
+    if ((uartx->ISR & USART_ISR_RXNE) != 0U)
+#endif
+    {
+        *out_char = (char)(uint8_t)(uartx->RDR & 0xFFU);
+        return 1U;
     }
 
     return 0U;

@@ -698,9 +698,20 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
     assigned_id = (uint16_t)frame->payload[2] | ((uint16_t)frame->payload[3] << 8);
 
-    if ((nonce != s_join_nonce) ||
-        (assigned_id == APP_NODE_ID_UNASSIGNED) ||
+    if (nonce != s_join_nonce) {
+        uart1_write_str("JOIN_ACK ignored nonce=");
+        uart1_write_u32((uint32_t)nonce);
+        uart1_write_str(" expected=");
+        uart1_write_u32((uint32_t)s_join_nonce);
+        uart1_write_str("\r\n");
+        return;
+    }
+
+    if ((assigned_id == APP_NODE_ID_UNASSIGNED) ||
         (assigned_id == APP_BROADCAST_ID)) {
+        uart1_write_str("JOIN_ACK ignored invalid id=");
+        uart1_write_u32((uint32_t)assigned_id);
+        uart1_write_str("\r\n");
         return;
     }
 
