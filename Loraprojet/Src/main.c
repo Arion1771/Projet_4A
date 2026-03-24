@@ -280,6 +280,8 @@ int main(void)
     Uart_Log("RFSW PROFILE: LORAE5\r\n");
 #endif
     Uart_Log("COORDINATOR NODE ID: 1\r\n");
+    Uart_Logf("PRESENCE OFFLINE THRESHOLD: %lu ms\r\n",
+              (unsigned long)APP_NODE_OFFLINE_MS);
     Uart_Log("SERIAL: type text + Enter (or short pause) to send on LoRa\r\n");
     Uart_Log("SERIAL: commands available via help\r\n");
 
@@ -676,13 +678,7 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce)
         {
             if (join_table[i].nonce == nonce)
             {
-                if (join_table[i].online == 0U)
-                {
-                    Uart_LogTimedf("INFO: node %u reconnected\r\n",
-                                   (unsigned)join_table[i].node_id);
-                }
-                join_table[i].last_seen_ms = now_ms;
-                join_table[i].online = 1U;
+                App_MarkNodeSeen(join_table[i].node_id, now_ms);
                 return join_table[i].node_id;
             }
         }
@@ -714,6 +710,8 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce)
 static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
 {
     uint8_t i;
+    uint8_t found = 0U;
+    uint8_t was_online = 0U;
 
     if ((node_id == APP_NODE_UNASSIGNED) ||
         (node_id == APP_BROADCAST_ID) ||
@@ -726,33 +724,100 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
     {
         if (join_table[i].used && (join_table[i].node_id == node_id))
         {
-            if (join_table[i].online == 0U)
+            found = 1U;
+            if (join_table[i].online != 0U)
             {
-                Uart_LogTimedf("INFO: node %u reconnected\r\n", (unsigned)node_id);
+                was_online = 1U;
             }
             join_table[i].last_seen_ms = now_ms;
             join_table[i].online = 1U;
-            return;
         }
+    }
+
+    if ((found != 0U) && (was_online == 0U))
+    {
+        Uart_LogTimedf("INFO: node %u reconnected\r\n", (unsigned)node_id);
     }
 }
 
 static void App_CheckNodeDisconnects(uint32_t now_ms)
 {
     uint8_t i;
+    uint8_t j;
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
     {
-        if (!join_table[i].used || (join_table[i].online == 0U))
+        uint16_t node_id;
+        uint32_t latest_seen_ms = 0U;
+        uint8_t any_online = 0U;
+        uint8_t already_processed = 0U;
+
+        if (!join_table[i].used)
         {
             continue;
         }
 
-        if ((now_ms - join_table[i].last_seen_ms) >= APP_NODE_OFFLINE_MS)
+        node_id = join_table[i].node_id;
+        if ((node_id == APP_NODE_UNASSIGNED) ||
+            (node_id == APP_BROADCAST_ID) ||
+            (node_id == APP_COORDINATOR_ID))
         {
-            join_table[i].online = 0U;
-            Uart_LogTimedf("WARN: node %u disconnected\r\n",
-                           (unsigned)join_table[i].node_id);
+            continue;
+        }
+
+        for (j = 0U; j < i; j++)
+        {
+            if (join_table[j].used && (join_table[j].node_id == node_id))
+            {
+                already_processed = 1U;
+                break;
+            }
+        }
+        if (already_processed != 0U)
+        {
+            continue;
+        }
+
+        for (j = 0U; j < APP_JOIN_TABLE_SIZE; j++)
+        {
+            if (!join_table[j].used || (join_table[j].node_id != node_id))
+            {
+                continue;
+            }
+
+            if (join_table[j].online != 0U)
+            {
+                any_online = 1U;
+            }
+
+            if ((latest_seen_ms == 0U) || (join_table[j].last_seen_ms > latest_seen_ms))
+            {
+                latest_seen_ms = join_table[j].last_seen_ms;
+            }
+        }
+
+        if ((any_online == 0U) || (latest_seen_ms == 0U))
+        {
+            continue;
+        }
+
+        /* Guard against incoherent future timestamps (underflow would look like huge age). */
+        if (latest_seen_ms > now_ms)
+        {
+            latest_seen_ms = now_ms;
+        }
+
+        if ((now_ms - latest_seen_ms) >= APP_NODE_OFFLINE_MS)
+        {
+            for (j = 0U; j < APP_JOIN_TABLE_SIZE; j++)
+            {
+                if (join_table[j].used && (join_table[j].node_id == node_id))
+                {
+                    join_table[j].online = 0U;
+                    join_table[j].last_seen_ms = latest_seen_ms;
+                }
+            }
+            Uart_LogTimedf("WARN: node %u disconnected\r\n", (unsigned)node_id);
         }
     }
 }
@@ -841,6 +906,7 @@ static void App_PrintNodes(void)
     uint8_t i;
     uint8_t found = 0U;
     uint32_t now_ms = HAL_GetTick();
+    uint32_t age_ms;
 
     Uart_Log("Known nodes: ");
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
@@ -848,11 +914,19 @@ static void App_PrintNodes(void)
         if (join_table[i].used)
         {
             found = 1U;
+            if (join_table[i].last_seen_ms <= now_ms)
+            {
+                age_ms = now_ms - join_table[i].last_seen_ms;
+            }
+            else
+            {
+                age_ms = 0U;
+            }
             Uart_Logf("[id=%u nonce=%u state=%s ageMs=%lu] ",
                       (unsigned)join_table[i].node_id,
                       (unsigned)join_table[i].nonce,
                       (join_table[i].online != 0U) ? "online" : "offline",
-                      (unsigned long)(now_ms - join_table[i].last_seen_ms));
+                      (unsigned long)age_ms);
         }
     }
     if (found == 0U)

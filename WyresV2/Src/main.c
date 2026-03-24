@@ -84,9 +84,16 @@ typedef struct {
 #define USART_CR1_UE         (1UL << 13)
 #define USART_CR1_TE         (1UL << 3)
 #define USART_CR1_RE         (1UL << 2)
+#define USART_CR1_RXNEIE     (1UL << 5)
+#define USART_SR_ORE         (1UL << 3)
 #define USART_SR_RXNE        (1UL << 5)
 #define USART_SR_TXE         (1UL << 7)
 #define USART_SR_TC          (1UL << 6)
+
+#define NVIC_ISER_BASE       0xE000E100UL
+#define NVIC_ISER            ((volatile uint32_t *)NVIC_ISER_BASE)
+#define USART1_IRQ_NUMBER    37U
+#define UART_RX_RING_SIZE    128U
 
 #define SYSTICK_BASE         0xE000E010UL
 #define SYSTICK_CSR          (*(volatile uint32_t *)(SYSTICK_BASE + 0x0UL))
@@ -199,8 +206,16 @@ static uint8_t s_uart_line_len = 0U;
 static uint32_t s_uart_last_rx_ms = 0U;
 static bool s_join_req_next_direct = false;
 static volatile uint32_t s_system_ms = 0U;
+static volatile uint8_t s_uart_rx_ring[UART_RX_RING_SIZE];
+static volatile uint8_t s_uart_rx_head = 0U;
+static volatile uint8_t s_uart_rx_tail = 0U;
 
 static void app_print_status(uint32_t now_ms);
+
+static void nvic_enable_irq(uint8_t irqn)
+{
+    NVIC_ISER[irqn / 32U] = (uint32_t)1UL << (irqn % 32U);
+}
 
 static void systick_init_1khz(void)
 {
@@ -213,6 +228,28 @@ static void systick_init_1khz(void)
 void SysTick_Handler(void)
 {
     s_system_ms++;
+}
+
+void USART1_IRQHandler(void)
+{
+    uint32_t sr = USART1->SR;
+
+    while ((sr & USART_SR_RXNE) != 0UL) {
+        uint8_t c = (uint8_t)(USART1->DR & 0xFFU);
+        uint8_t next = (uint8_t)(s_uart_rx_head + 1U);
+        if (next >= UART_RX_RING_SIZE) {
+            next = 0U;
+        }
+        if (next != s_uart_rx_tail) {
+            s_uart_rx_ring[s_uart_rx_head] = c;
+            s_uart_rx_head = next;
+        }
+        sr = USART1->SR;
+    }
+
+    if ((sr & USART_SR_ORE) != 0UL) {
+        (void)USART1->DR;
+    }
 }
 
 static void delay_cycles(volatile uint32_t cycles)
@@ -292,7 +329,14 @@ static void uart1_init_115200(void)
     USART1->CR2 = 0UL;
     USART1->CR3 = 0UL;
     USART1->BRR = (16000000UL + (115200UL / 2UL)) / 115200UL;
-    USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
+    s_uart_rx_head = 0U;
+    s_uart_rx_tail = 0U;
+    while ((USART1->SR & USART_SR_RXNE) != 0UL) {
+        (void)USART1->DR;
+    }
+
+    USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE | USART_CR1_UE;
+    nvic_enable_irq(USART1_IRQ_NUMBER);
 }
 
 static void uart1_write_char(char c)
@@ -304,12 +348,29 @@ static void uart1_write_char(char c)
 
 static bool uart1_try_read_char(char *out_char)
 {
-    if ((out_char == NULL) || ((USART1->SR & USART_SR_RXNE) == 0UL)) {
+    uint8_t tail;
+
+    if (out_char == NULL) {
         return false;
     }
 
-    *out_char = (char)(USART1->DR & 0xFFU);
-    return true;
+    tail = s_uart_rx_tail;
+    if (tail != s_uart_rx_head) {
+        *out_char = (char)s_uart_rx_ring[tail];
+        tail++;
+        if (tail >= UART_RX_RING_SIZE) {
+            tail = 0U;
+        }
+        s_uart_rx_tail = tail;
+        return true;
+    }
+
+    if ((USART1->SR & USART_SR_RXNE) != 0UL) {
+        *out_char = (char)(USART1->DR & 0xFFU);
+        return true;
+    }
+
+    return false;
 }
 
 static void uart1_write_str(const char *s)
@@ -1633,7 +1694,7 @@ int main(void)
     app_init_identity();
 
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: JOIN_TX_ACKBURST_V5\r\n");
+    uart1_write_str("BUILD: JOIN_UART_IRQ_V6\r\n");
     uart1_write_str("MODE: LoRa text + ID join + ACK retransmission\r\n");
     uart1_write_str("cfg coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "1" : "0");
