@@ -110,6 +110,8 @@ typedef struct {
 #define APP_STATUS_PERIOD_MS      1000U
 
 #define APP_UART_LINE_MAX         96U
+#define APP_UART_ECHO             0U
+#define APP_UART_AUTOSUBMIT_MS    180U
 #define APP_RX_TRACK_SIZE         16U
 #define APP_RELAY_TRACK_SIZE      24U
 #define APP_JOIN_TABLE_SIZE       16U
@@ -173,6 +175,7 @@ static uint8_t s_rx_track_insert_idx = 0U;
 static uint8_t s_relay_track_insert_idx = 0U;
 static char s_uart_line[APP_UART_LINE_MAX];
 static uint8_t s_uart_line_len = 0U;
+static uint32_t s_uart_last_rx_ms = 0U;
 
 static void app_print_status(uint32_t now_ms);
 
@@ -914,6 +917,7 @@ static void app_send_join_request(uint32_t now_ms)
         s_last_join_req_ms = now_ms;
         uart1_write_str("JOIN_REQ nonce=");
         uart1_write_u32((uint32_t)s_join_nonce);
+        uart1_write_str(" dst=broadcast");
         uart1_write_str("\r\n");
     }
 }
@@ -1077,12 +1081,34 @@ static void app_relay_frame(const wyresv2_frame_t *frame, link_direction_t from)
     out_dir = (from == LINK_PREDECESSOR) ? LINK_SUCCESSOR : LINK_PREDECESSOR;
     if (app_send_raw_dir(out_dir, raw, raw_len)) {
         app_relay_remember(frame->src_id, frame->seq);
+        if ((frame->type == MSG_JOIN_REQ) || (frame->type == MSG_JOIN_ACK)) {
+            uart1_write_str("RELAY ");
+            uart1_write_str((frame->type == MSG_JOIN_REQ) ? "JOIN_REQ" : "JOIN_ACK");
+            uart1_write_str(" src=");
+            uart1_write_u32((uint32_t)frame->src_id);
+            uart1_write_str(" dst=");
+            uart1_write_u32((uint32_t)frame->dst_id);
+            uart1_write_str(" ttl=");
+            uart1_write_u32((uint32_t)relay.ttl);
+            uart1_write_str("\r\n");
+        }
         return;
     }
 
     /* Single-radio fallback (dir may be ignored by backend anyway). */
     if (app_send_raw(raw, raw_len)) {
         app_relay_remember(frame->src_id, frame->seq);
+        if ((frame->type == MSG_JOIN_REQ) || (frame->type == MSG_JOIN_ACK)) {
+            uart1_write_str("RELAY ");
+            uart1_write_str((frame->type == MSG_JOIN_REQ) ? "JOIN_REQ" : "JOIN_ACK");
+            uart1_write_str(" src=");
+            uart1_write_u32((uint32_t)frame->src_id);
+            uart1_write_str(" dst=");
+            uart1_write_u32((uint32_t)frame->dst_id);
+            uart1_write_str(" ttl=");
+            uart1_write_u32((uint32_t)relay.ttl);
+            uart1_write_str(" (fallback)\r\n");
+        }
     }
 }
 
@@ -1238,10 +1264,14 @@ static void app_poll_uart(uint32_t now_ms)
     char c;
 
     while (uart1_try_read_char(&c)) {
+        s_uart_last_rx_ms = now_ms;
+
         if ((c == '\r') || (c == '\n')) {
             if (s_uart_line_len > 0U) {
                 s_uart_line[s_uart_line_len] = '\0';
+#if (APP_UART_ECHO != 0U)
                 uart1_write_str("\r\n");
+#endif
                 app_handle_uart_line(s_uart_line, now_ms);
                 s_uart_line_len = 0U;
                 uart1_write_str("> ");
@@ -1252,7 +1282,9 @@ static void app_poll_uart(uint32_t now_ms)
         if ((c == '\b') || ((uint8_t)c == 0x7FU)) {
             if (s_uart_line_len > 0U) {
                 s_uart_line_len--;
+#if (APP_UART_ECHO != 0U)
                 uart1_write_str("\b \b");
+#endif
             }
             continue;
         }
@@ -1260,9 +1292,19 @@ static void app_poll_uart(uint32_t now_ms)
         if (((uint8_t)c >= 32U) && ((uint8_t)c <= 126U)) {
             if (s_uart_line_len < (APP_UART_LINE_MAX - 1U)) {
                 s_uart_line[s_uart_line_len++] = c;
+#if (APP_UART_ECHO != 0U)
                 uart1_write_char(c);
+#endif
             }
         }
+    }
+
+    if ((s_uart_line_len > 0U) &&
+        ((now_ms - s_uart_last_rx_ms) >= APP_UART_AUTOSUBMIT_MS)) {
+        s_uart_line[s_uart_line_len] = '\0';
+        app_handle_uart_line(s_uart_line, now_ms);
+        s_uart_line_len = 0U;
+        uart1_write_str("> ");
     }
 }
 
@@ -1286,7 +1328,7 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
 
     /*
      * Multi-hop relay:
-     * if frame is not for this node (or special JOIN_ACK broadcast case), forward it.
+     * if frame is not for this node (or JOIN_REQ/JOIN_ACK broadcast cases), forward it.
      */
     app_relay_frame(&frame, from);
 
