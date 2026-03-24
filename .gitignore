@@ -18,4 +18,3 @@
 # Keep project metadata/versioned sources
 !.project
 !.cproject
-!.settings/
