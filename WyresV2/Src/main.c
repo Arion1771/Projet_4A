@@ -904,7 +904,7 @@ static void app_send_join_request(uint32_t now_ms)
         return;
     }
 
-    app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, APP_COORDINATOR_ID, s_next_seq++);
+    app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, APP_BROADCAST_ID, s_next_seq++);
     req.payload_len = 2U;
     req.payload[0] = (uint8_t)(s_join_nonce & 0xFFU);
     req.payload[1] = (uint8_t)((s_join_nonce >> 8) & 0xFFU);
@@ -1041,10 +1041,10 @@ static bool app_should_relay_frame(const wyresv2_frame_t *frame)
 
     /*
      * Unicast frames are relayed.
-     * Broadcast is relayed only for JOIN_ACK to allow multi-hop join.
+     * Broadcast is relayed for JOIN_REQ/JOIN_ACK to allow multi-hop join.
      */
     if (frame->dst_id == APP_BROADCAST_ID) {
-        return (frame->type == MSG_JOIN_ACK);
+        return (frame->type == MSG_JOIN_ACK) || (frame->type == MSG_JOIN_REQ);
     }
 
     return true;
@@ -1521,3 +1521,4 @@ int main(void)
         delay_ms(APP_LOOP_STEP_MS);
     }
 }
+
