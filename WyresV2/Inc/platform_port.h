@@ -40,6 +40,7 @@ uint32_t platform_radio_dbg_rearm_count(void);
 uint32_t platform_radio_dbg_hard_reset_count(void);
 uint8_t platform_radio_dbg_last_irq_flags(void);
 uint8_t platform_radio_dbg_last_opmode(void);
+uint8_t platform_radio_dbg_tx_variant(void);
 
 /* LED and local indicators */
 void platform_led_set(led_state_t state);

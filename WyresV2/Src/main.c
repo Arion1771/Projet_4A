@@ -364,6 +364,26 @@ static char *skip_spaces(char *p)
     return p;
 }
 
+static void rstrip_spaces(char *p)
+{
+    size_t n;
+
+    if (p == NULL) {
+        return;
+    }
+
+    n = strlen(p);
+    while (n > 0U) {
+        char c = p[n - 1U];
+        if ((c == ' ') || (c == '\t') || (c == '\r') || (c == '\n')) {
+            p[n - 1U] = '\0';
+            n--;
+        } else {
+            break;
+        }
+    }
+}
+
 static bool parse_u16_token(char **cursor, uint16_t *out_value)
 {
     char *p;
@@ -931,6 +951,8 @@ static void app_send_join_request(uint32_t now_ms)
         } else {
             uart1_write_u32((uint32_t)dst_id);
         }
+        uart1_write_str(" txv=");
+        uart1_write_u32((uint32_t)platform_radio_dbg_tx_variant());
         uart1_write_str("\r\n");
     } else {
         uart1_write_str("JOIN_REQ tx busy dst=");
@@ -939,6 +961,8 @@ static void app_send_join_request(uint32_t now_ms)
         } else {
             uart1_write_u32((uint32_t)dst_id);
         }
+        uart1_write_str(" txv=");
+        uart1_write_u32((uint32_t)platform_radio_dbg_tx_variant());
         uart1_write_str("\r\n");
     }
 }
@@ -1204,6 +1228,7 @@ static void app_handle_uart_line(char *line, uint32_t now_ms)
     }
 
     cursor = skip_spaces(line);
+    rstrip_spaces(cursor);
     if (*cursor == '\0') {
         return;
     }
@@ -1447,6 +1472,8 @@ static void app_print_status(uint32_t now_ms)
     uart1_write_hex8(irq);
     uart1_write_str(" OPM=0x");
     uart1_write_hex8(opm);
+    uart1_write_str(" TV=");
+    uart1_write_u32((uint32_t)platform_radio_dbg_tx_variant());
     uart1_write_str(" BAT=");
     uart1_write_u32(platform_battery_mv());
     uart1_write_str("mV\r\n");
@@ -1517,7 +1544,7 @@ int main(void)
     app_init_identity();
 
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: JOIN_ALT_DST_STATUS\r\n");
+    uart1_write_str("BUILD: JOIN_TX_FALLBACK_V2\r\n");
     uart1_write_str("MODE: LoRa text + ID join + ACK retransmission\r\n");
     uart1_write_str("cfg coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "1" : "0");
