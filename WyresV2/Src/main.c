@@ -902,23 +902,52 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
 static void app_send_join_request(uint32_t now_ms)
 {
     wyresv2_frame_t req;
+    bool sent_any = false;
 
     if (s_joined || (APP_COORDINATOR_MODE != 0U) || (APP_FIXED_NODE_ID != 0U)) {
         return;
     }
 
+    /* First try broadcast (best for multi-hop discovery). */
     app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, APP_BROADCAST_ID, s_next_seq++);
     req.payload_len = 2U;
     req.payload[0] = (uint8_t)(s_join_nonce & 0xFFU);
     req.payload[1] = (uint8_t)((s_join_nonce >> 8) & 0xFFU);
 
     if (app_send_frame(&req)) {
+        sent_any = true;
         s_join_req_count++;
-        s_last_join_req_ms = now_ms;
         uart1_write_str("JOIN_REQ nonce=");
         uart1_write_u32((uint32_t)s_join_nonce);
         uart1_write_str(" dst=broadcast");
         uart1_write_str("\r\n");
+    }
+
+    /*
+     * Also try direct coordinator destination for compatibility with nodes
+     * that may not relay broadcast JOIN_REQ yet.
+     */
+    app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, APP_COORDINATOR_ID, s_next_seq++);
+    req.payload_len = 2U;
+    req.payload[0] = (uint8_t)(s_join_nonce & 0xFFU);
+    req.payload[1] = (uint8_t)((s_join_nonce >> 8) & 0xFFU);
+
+    if (app_send_frame(&req)) {
+        sent_any = true;
+        s_join_req_count++;
+        uart1_write_str("JOIN_REQ nonce=");
+        uart1_write_u32((uint32_t)s_join_nonce);
+        uart1_write_str(" dst=");
+        uart1_write_u32((uint32_t)APP_COORDINATOR_ID);
+        uart1_write_str("\r\n");
+    }
+
+    if (!sent_any) {
+        uart1_write_str("JOIN_REQ tx busy\r\n");
+    }
+
+    if (sent_any) {
+        s_last_join_req_ms = now_ms;
     }
 }
 

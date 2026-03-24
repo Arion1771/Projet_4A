@@ -248,7 +248,7 @@ int main(void)
 
     Uart_Log("BOOT LORAPROJET\r\n");
     Uart_Log("MODE: CARD1 COORDINATOR (LORAE5)\r\n");
-    Uart_Log("IRQ MODE: ISR_DIRECT\r\n");
+    Uart_Log("IRQ MODE: HYBRID_ISR_POLL\r\n");
     Uart_Log("BUILD: " __DATE__ " " __TIME__ "\r\n");
 #if (APP_CONSOLE_UART == 2U)
     Uart_Log("UART CONSOLE: USART2 (PA2/PA3)\r\n");
@@ -276,9 +276,12 @@ int main(void)
     {
         now_ms = HAL_GetTick();
 
-#if (APP_RADIO_IRQ_IN_ISR == 0U)
+        /*
+         * Keep polling IrqProcess even in ISR mode.
+         * Some boards/firmware revisions occasionally miss radio IRQ delivery;
+         * this hybrid path prevents silent RX/TX callback starvation.
+         */
         Radio.IrqProcess();
-#endif
         TimerProcess();
 
         if (radio_rx_done != 0U)
