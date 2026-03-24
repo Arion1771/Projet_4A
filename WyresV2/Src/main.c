@@ -1470,12 +1470,10 @@ static void app_poll_uart(uint32_t now_ms)
         }
 
         if ((c == '\b') || ((uint8_t)c == 0x7FU)) {
-            if (s_uart_line_len > 0U) {
-                s_uart_line_len--;
-#if (APP_UART_ECHO != 0U)
-                uart1_write_str("\b \b");
-#endif
-            }
+            /*
+             * Ignore backspace/delete control bytes.
+             * Some USB-serial tools inject 0x7F and this was truncating payload text.
+             */
             continue;
         }
 

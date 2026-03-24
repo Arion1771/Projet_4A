@@ -50,6 +50,7 @@
 #define APP_UART_MIRROR_BOTH   1U
 #define APP_UART_ECHO          0U
 #define APP_UART_AUTOSUBMIT_MS 900U
+#define APP_UART_RX_RING_SIZE  256U
 
 typedef enum
 {
@@ -126,6 +127,14 @@ typedef struct
     uint32_t next_tx_ms;
 } app_ack_burst_t;
 
+typedef struct
+{
+    volatile uint16_t head;
+    volatile uint16_t tail;
+    volatile uint32_t overflow_count;
+    uint8_t data[APP_UART_RX_RING_SIZE];
+} app_uart_ring_t;
+
 static UART_HandleTypeDef huart1;
 static UART_HandleTypeDef huart2;
 static uint8_t uart1_ready = 0U;
@@ -162,9 +171,13 @@ static uint16_t next_seq = 1U;
 static uint16_t default_dst_id = APP_BROADCAST_ID;
 static uint8_t uart_rx_seen = 0U;
 static uint32_t uart_last_rx_char_ms = 0U;
+static uint8_t uart_last_read_src = 0U;
+static app_uart_ring_t uart1_rx_ring;
+static app_uart_ring_t uart2_rx_ring;
 
 static char uart_line[APP_UART_LINE_MAX];
 static uint8_t uart_line_len = 0U;
+static uint8_t uart_line_src = 0U; /* 0=none, 1=USART1, 2=USART2 */
 static uint8_t relay_track_insert_idx = 0U;
 
 static uint32_t stat_rx_total = 0U;
@@ -196,11 +209,14 @@ static void OnRxError(void);
 
 static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
 static void Uart_Log(const char *msg);
-static void Uart_LogText(const uint8_t *data, uint16_t size);
 static void Uart_Logf(const char *fmt, ...);
 static void Uart_LogTimedf(const char *fmt, ...);
 static uint8_t Uart_TryReadChar(char *out_char);
 static uint8_t Uart_TryReadFrom(UART_HandleTypeDef *huart, char *out_char);
+static void Uart_RingReset(app_uart_ring_t *ring);
+static void Uart_RingPush(app_uart_ring_t *ring, uint8_t value);
+static uint8_t Uart_RingPop(app_uart_ring_t *ring, char *out_char);
+static void Uart_IrqDrain(UART_HandleTypeDef *huart, app_uart_ring_t *ring);
 
 static char *SkipSpaces(char *p);
 static uint8_t ParseU16(char **cursor, uint16_t *out_value);
@@ -273,6 +289,7 @@ int main(void)
 #else
     Uart_Log("UART CONSOLE: USART1 (PB6/PB7)\r\n");
 #endif
+    Uart_Log("UART RX MODE: IRQ_RING + PER_LINE_SOURCE\r\n");
     Uart_Log("RFSW PROFILE ID: " STR(RBI_RF_SW_PROFILE) "\r\n");
 #if (RBI_RF_SW_PROFILE == RBI_RF_SW_PROFILE_WYRES_REVC)
     Uart_Log("RFSW PROFILE: WYRES_REVC\r\n");
@@ -963,6 +980,10 @@ static void App_PrintStatus(void)
               (unsigned)pending_join_ack.active,
               (unsigned)tx_pending,
               (unsigned)st);
+    Uart_Logf("STATUS uartLineSrc=%u uart1Ov=%lu uart2Ov=%lu\r\n",
+              (unsigned)uart_line_src,
+              (unsigned long)uart1_rx_ring.overflow_count,
+              (unsigned long)uart2_rx_ring.overflow_count);
 }
 
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms)
@@ -1257,9 +1278,6 @@ static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int
     if (!App_ParseFrame(&frame, data, len))
     {
         stat_parse_err++;
-        Uart_Log("RX RAW: ");
-        Uart_LogText(data, len);
-        Uart_Log("\r\n");
         return;
     }
 
@@ -1458,9 +1476,11 @@ static void App_HandleUartLine(char *line, uint32_t now_ms)
 static void App_PollUart(uint32_t now_ms)
 {
     char c;
+    uint8_t src;
 
     while (Uart_TryReadChar(&c))
     {
+        src = uart_last_read_src;
         uart_last_rx_char_ms = now_ms;
 
         if (uart_rx_seen == 0U)
@@ -1477,18 +1497,28 @@ static void App_PollUart(uint32_t now_ms)
 
         if ((c == '\b') || ((uint8_t)c == 0x7FU))
         {
-            if (uart_line_len > 0U)
-            {
-                uart_line_len--;
-#if (APP_UART_ECHO != 0U)
-                Uart_Log("\b \b");
-#endif
-            }
+            /*
+             * Ignore backspace/delete control bytes.
+             * This prevents 1-char truncation when these bytes are injected
+             * by a secondary UART bridge or terminal.
+             */
             continue;
         }
 
         if (((uint8_t)c >= 32U) && ((uint8_t)c <= 126U))
         {
+            /*
+             * Keep each submitted line bound to a single UART source.
+             * This avoids mixed lines when both USARTs are connected.
+             */
+            if ((uart_line_src != 0U) && (src != 0U) && (src != uart_line_src))
+            {
+                continue;
+            }
+            if ((uart_line_src == 0U) && (src != 0U))
+            {
+                uart_line_src = src;
+            }
             if (uart_line_len < (APP_UART_LINE_MAX - 1U))
             {
                 uart_line[uart_line_len++] = c;
@@ -1519,6 +1549,7 @@ static void App_SubmitUartLine(uint32_t now_ms)
 #endif
     App_HandleUartLine(uart_line, now_ms);
     uart_line_len = 0U;
+    uart_line_src = 0U;
     Uart_Log("> ");
 }
 
@@ -1641,27 +1672,6 @@ static void Uart_Log(const char *msg)
     Uart_TransmitAll((const uint8_t *)msg, (uint16_t)strlen(msg));
 }
 
-static void Uart_LogText(const uint8_t *data, uint16_t size)
-{
-    uint16_t i;
-    uint8_t c;
-
-    if (data == NULL)
-    {
-        return;
-    }
-
-    for (i = 0U; i < size; i++)
-    {
-        c = data[i];
-        if ((c < 32U) || (c > 126U))
-        {
-            c = '.';
-        }
-        Uart_TransmitAll(&c, 1U);
-    }
-}
-
 static void Uart_Logf(const char *fmt, ...)
 {
     char buf[196];
@@ -1716,6 +1726,124 @@ static void Uart_LogTimedf(const char *fmt, ...)
     Uart_Log(line);
 }
 
+static void Uart_RingReset(app_uart_ring_t *ring)
+{
+    if (ring == NULL)
+    {
+        return;
+    }
+
+    ring->head = 0U;
+    ring->tail = 0U;
+    ring->overflow_count = 0U;
+}
+
+static void Uart_RingPush(app_uart_ring_t *ring, uint8_t value)
+{
+    uint16_t head;
+    uint16_t next;
+    uint16_t tail;
+
+    if (ring == NULL)
+    {
+        return;
+    }
+
+    head = ring->head;
+    tail = ring->tail;
+    next = (uint16_t)(head + 1U);
+    if (next >= APP_UART_RX_RING_SIZE)
+    {
+        next = 0U;
+    }
+
+    if (next == tail)
+    {
+        /* Drop oldest byte to keep newest command input. */
+        tail = (uint16_t)(tail + 1U);
+        if (tail >= APP_UART_RX_RING_SIZE)
+        {
+            tail = 0U;
+        }
+        ring->tail = tail;
+        ring->overflow_count++;
+    }
+
+    ring->data[head] = value;
+    ring->head = next;
+}
+
+static uint8_t Uart_RingPop(app_uart_ring_t *ring, char *out_char)
+{
+    uint16_t tail;
+    uint16_t head;
+
+    if ((ring == NULL) || (out_char == NULL))
+    {
+        return 0U;
+    }
+
+    tail = ring->tail;
+    head = ring->head;
+    if (tail == head)
+    {
+        return 0U;
+    }
+
+    *out_char = (char)ring->data[tail];
+    tail = (uint16_t)(tail + 1U);
+    if (tail >= APP_UART_RX_RING_SIZE)
+    {
+        tail = 0U;
+    }
+    ring->tail = tail;
+    return 1U;
+}
+
+static void Uart_IrqDrain(UART_HandleTypeDef *huart, app_uart_ring_t *ring)
+{
+    USART_TypeDef *uartx;
+    uint32_t isr;
+
+    if ((huart == NULL) || (ring == NULL) || (huart->Instance == NULL))
+    {
+        return;
+    }
+
+    uartx = huart->Instance;
+    isr = uartx->ISR;
+
+    if ((isr & (USART_ISR_ORE | USART_ISR_NE | USART_ISR_FE | USART_ISR_PE)) != 0U)
+    {
+        uartx->ICR = USART_ICR_ORECF | USART_ICR_NECF | USART_ICR_FECF | USART_ICR_PECF;
+    }
+
+#if defined(USART_ISR_RXNE_RXFNE)
+    while ((uartx->ISR & USART_ISR_RXNE_RXFNE) != 0U)
+#else
+    while ((uartx->ISR & USART_ISR_RXNE) != 0U)
+#endif
+    {
+        Uart_RingPush(ring, (uint8_t)(uartx->RDR & 0xFFU));
+    }
+}
+
+void USART1_IRQHandler(void)
+{
+    if (uart1_ready != 0U)
+    {
+        Uart_IrqDrain(&huart1, &uart1_rx_ring);
+    }
+}
+
+void USART2_IRQHandler(void)
+{
+    if (uart2_ready != 0U)
+    {
+        Uart_IrqDrain(&huart2, &uart2_rx_ring);
+    }
+}
+
 static void Uart_TransmitAll(const uint8_t *buf, uint16_t len)
 {
     if ((buf == NULL) || (len == 0U))
@@ -1767,26 +1895,55 @@ static uint8_t Uart_TryReadChar(char *out_char)
         return 0U;
     }
 
+    uart_last_read_src = 0U;
+
+#if (APP_CONSOLE_UART == 2U)
+    if (Uart_RingPop(&uart2_rx_ring, out_char) != 0U)
+    {
+        uart_last_read_src = 2U;
+        return 1U;
+    }
+    if (Uart_RingPop(&uart1_rx_ring, out_char) != 0U)
+    {
+        uart_last_read_src = 1U;
+        return 1U;
+    }
+#else
+    if (Uart_RingPop(&uart1_rx_ring, out_char) != 0U)
+    {
+        uart_last_read_src = 1U;
+        return 1U;
+    }
+    if (Uart_RingPop(&uart2_rx_ring, out_char) != 0U)
+    {
+        uart_last_read_src = 2U;
+        return 1U;
+    }
+#endif
+
     /*
-     * Robust non-blocking RX path:
-     * read directly from UART registers to avoid HAL state edge cases with timeout=0 polling.
+     * Safety fallback: direct register polling in case IRQ/RXNE config is not active yet.
      */
 #if (APP_CONSOLE_UART == 2U)
     if (Uart_TryReadFrom(&huart2, out_char) != 0U)
     {
+        uart_last_read_src = 2U;
         return 1U;
     }
     if (Uart_TryReadFrom(&huart1, out_char) != 0U)
     {
+        uart_last_read_src = 1U;
         return 1U;
     }
 #else
     if (Uart_TryReadFrom(&huart1, out_char) != 0U)
     {
+        uart_last_read_src = 1U;
         return 1U;
     }
     if (Uart_TryReadFrom(&huart2, out_char) != 0U)
     {
+        uart_last_read_src = 2U;
         return 1U;
     }
 #endif
@@ -1854,6 +2011,9 @@ static void MX_USART_UART_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+    Uart_RingReset(&uart1_rx_ring);
+    Uart_RingReset(&uart2_rx_ring);
+
     __HAL_RCC_USART2_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
@@ -1876,6 +2036,14 @@ static void MX_USART_UART_Init(void)
     huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
     if (HAL_UART_Init(&huart2) == HAL_OK)
     {
+        __HAL_UART_ENABLE_IT(&huart2, UART_IT_ERR);
+#if defined(USART_CR1_RXNEIE_RXFNEIE)
+        SET_BIT(huart2.Instance->CR1, USART_CR1_RXNEIE_RXFNEIE);
+#else
+        __HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
+#endif
+        HAL_NVIC_SetPriority(USART2_IRQn, 2, 0);
+        HAL_NVIC_EnableIRQ(USART2_IRQn);
         uart2_ready = 1U;
     }
 
@@ -1901,6 +2069,14 @@ static void MX_USART_UART_Init(void)
     huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
     if (HAL_UART_Init(&huart1) == HAL_OK)
     {
+        __HAL_UART_ENABLE_IT(&huart1, UART_IT_ERR);
+#if defined(USART_CR1_RXNEIE_RXFNEIE)
+        SET_BIT(huart1.Instance->CR1, USART_CR1_RXNEIE_RXFNEIE);
+#else
+        __HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
+#endif
+        HAL_NVIC_SetPriority(USART1_IRQn, 2, 0);
+        HAL_NVIC_EnableIRQ(USART1_IRQn);
         uart1_ready = 1U;
     }
 }
