@@ -32,13 +32,14 @@
 #define APP_MAX_FRAME_LEN      (APP_FRAME_OVERHEAD + APP_MAX_PAYLOAD)
 #define APP_TX_QUEUE_SIZE      8U
 #define APP_UART_LINE_MAX      96U
+#define APP_RELAY_TRACK_SIZE   24U
 #define APP_JOIN_TABLE_SIZE    16U
 #define APP_JOIN_FIRST_ID      2U
 #define APP_JOIN_LAST_ID       250U
 #define APP_JOIN_ACK_REPEAT    3U
 #define APP_JOIN_ACK_DELAY_MS  120U
 #define APP_JOIN_ACK_GAP_MS    120U
-#define APP_NODE_OFFLINE_MS    12000U
+#define APP_NODE_OFFLINE_MS    30000U
 #define APP_ACK_TIMEOUT_MS     700U
 #define APP_ACK_MAX_RETRIES    3U
 /* 2 = USART2 (PA2/PA3, usually ST-LINK VCP), 1 = USART1 (PB6/PB7) */
@@ -99,6 +100,13 @@ typedef struct
 
 typedef struct
 {
+    uint8_t used;
+    uint16_t src_id;
+    uint16_t seq;
+} app_relay_track_t;
+
+typedef struct
+{
     uint8_t active;
     uint16_t nonce;
     uint16_t assigned_id;
@@ -134,6 +142,7 @@ static uint8_t tx_queue_count = 0U;
 
 static app_pending_ack_t pending_ack;
 static app_join_ack_burst_t pending_join_ack;
+static app_relay_track_t relay_track[APP_RELAY_TRACK_SIZE];
 static app_join_entry_t join_table[APP_JOIN_TABLE_SIZE];
 static uint16_t next_assigned_id = APP_JOIN_FIRST_ID;
 static uint16_t next_seq = 1U;
@@ -143,6 +152,7 @@ static uint32_t uart_last_rx_char_ms = 0U;
 
 static char uart_line[APP_UART_LINE_MAX];
 static uint8_t uart_line_len = 0U;
+static uint8_t relay_track_insert_idx = 0U;
 
 static uint32_t stat_rx_total = 0U;
 static uint32_t stat_tx_started = 0U;
@@ -197,6 +207,9 @@ static uint16_t App_JoinAllocateId(void);
 static uint16_t App_JoinFindOrAssign(uint16_t nonce);
 static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms);
 static void App_CheckNodeDisconnects(uint32_t now_ms);
+static uint8_t App_RelayIsDuplicate(uint16_t src_id, uint16_t seq);
+static void App_RelayRemember(uint16_t src_id, uint16_t seq);
+static void App_RelayFrame(const app_frame_t *frame);
 static void App_PrintNodes(void);
 
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms);
@@ -229,7 +242,9 @@ int main(void)
 
     memset(&pending_ack, 0, sizeof(pending_ack));
     memset(&pending_join_ack, 0, sizeof(pending_join_ack));
+    memset(relay_track, 0, sizeof(relay_track));
     memset(join_table, 0, sizeof(join_table));
+    relay_track_insert_idx = 0U;
 
     Uart_Log("BOOT LORAPROJET\r\n");
     Uart_Log("MODE: CARD1 COORDINATOR (LORAE5)\r\n");
@@ -720,6 +735,85 @@ static void App_CheckNodeDisconnects(uint32_t now_ms)
     }
 }
 
+static uint8_t App_RelayIsDuplicate(uint16_t src_id, uint16_t seq)
+{
+    uint8_t i;
+
+    for (i = 0U; i < APP_RELAY_TRACK_SIZE; i++)
+    {
+        if (relay_track[i].used &&
+            (relay_track[i].src_id == src_id) &&
+            (relay_track[i].seq == seq))
+        {
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
+static void App_RelayRemember(uint16_t src_id, uint16_t seq)
+{
+    app_relay_track_t *slot = &relay_track[relay_track_insert_idx];
+
+    slot->used = 1U;
+    slot->src_id = src_id;
+    slot->seq = seq;
+    relay_track_insert_idx++;
+    if (relay_track_insert_idx >= APP_RELAY_TRACK_SIZE)
+    {
+        relay_track_insert_idx = 0U;
+    }
+}
+
+static void App_RelayFrame(const app_frame_t *frame)
+{
+    app_frame_t relay;
+
+    if (frame == NULL)
+    {
+        return;
+    }
+
+    if (frame->ttl == 0U)
+    {
+        return;
+    }
+
+    if (frame->dst_id == APP_COORDINATOR_ID)
+    {
+        return;
+    }
+
+    if (frame->dst_id == APP_BROADCAST_ID)
+    {
+        return;
+    }
+
+    /* Anti-loop: never relay a frame that originated from this coordinator. */
+    if (frame->src_id == APP_COORDINATOR_ID)
+    {
+        return;
+    }
+
+    if (App_RelayIsDuplicate(frame->src_id, frame->seq))
+    {
+        return;
+    }
+
+    relay = *frame;
+    relay.ttl--;
+    if (App_QueueFrame(&relay))
+    {
+        App_RelayRemember(frame->src_id, frame->seq);
+        Uart_LogTimedf("RELAY src=%u dst=%u seq=%u ttl=%u\r\n",
+                       (unsigned)frame->src_id,
+                       (unsigned)frame->dst_id,
+                       (unsigned)frame->seq,
+                       (unsigned)relay.ttl);
+    }
+}
+
 static void App_PrintNodes(void)
 {
     uint8_t i;
@@ -1004,6 +1098,7 @@ static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int
     }
 
     App_MarkNodeSeen(frame.src_id, HAL_GetTick());
+    App_RelayFrame(&frame);
     App_HandleFrame(&frame, rssi, snr);
 }
 

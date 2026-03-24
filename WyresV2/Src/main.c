@@ -105,12 +105,13 @@ typedef struct {
 #define APP_RETRY_BACKOFF_MS      120U
 #define APP_JOIN_RETRY_MS         2000U
 #define APP_HEARTBEAT_PERIOD_MS   3000U
-#define APP_NODE_OFFLINE_MS       12000U
+#define APP_NODE_OFFLINE_MS       30000U
 #define APP_LOOP_STEP_MS          20U
 #define APP_STATUS_PERIOD_MS      1000U
 
 #define APP_UART_LINE_MAX         96U
 #define APP_RX_TRACK_SIZE         16U
+#define APP_RELAY_TRACK_SIZE      24U
 #define APP_JOIN_TABLE_SIZE       16U
 #define APP_JOIN_FIRST_ASSIGN_ID  2U
 #define APP_JOIN_LAST_ASSIGN_ID   250U
@@ -130,6 +131,12 @@ typedef struct {
     uint16_t src_id;
     uint16_t last_seq;
 } app_rx_track_entry_t;
+
+typedef struct {
+    bool used;
+    uint16_t src_id;
+    uint16_t seq;
+} app_relay_track_entry_t;
 
 typedef struct {
     bool used;
@@ -160,8 +167,10 @@ static bool s_joined = false;
 
 static app_pending_tx_t s_pending_tx;
 static app_rx_track_entry_t s_rx_track[APP_RX_TRACK_SIZE];
+static app_relay_track_entry_t s_relay_track[APP_RELAY_TRACK_SIZE];
 static app_join_entry_t s_join_table[APP_JOIN_TABLE_SIZE];
 static uint8_t s_rx_track_insert_idx = 0U;
+static uint8_t s_relay_track_insert_idx = 0U;
 static char s_uart_line[APP_UART_LINE_MAX];
 static uint8_t s_uart_line_len = 0U;
 
@@ -464,18 +473,23 @@ static bool app_parse_frame(wyresv2_frame_t *frame, const uint8_t *raw, uint16_t
     return true;
 }
 
-static bool app_send_raw(const uint8_t *raw, uint8_t raw_len)
+static bool app_send_raw_dir(link_direction_t dir, const uint8_t *raw, uint8_t raw_len)
 {
     if ((raw == NULL) || (raw_len == 0U)) {
         return false;
     }
 
-    if (!platform_radio_send(LINK_SUCCESSOR, raw, raw_len)) {
+    if (!platform_radio_send(dir, raw, raw_len)) {
         return false;
     }
 
     s_tx_count++;
     return true;
+}
+
+static bool app_send_raw(const uint8_t *raw, uint8_t raw_len)
+{
+    return app_send_raw_dir(LINK_SUCCESSOR, raw, raw_len);
 }
 
 static bool app_send_frame(const wyresv2_frame_t *frame)
@@ -532,6 +546,34 @@ static bool app_is_duplicate(uint16_t src_id, uint16_t seq)
         s_rx_track_insert_idx = 0U;
     }
     return false;
+}
+
+static bool app_relay_is_duplicate(uint16_t src_id, uint16_t seq)
+{
+    uint8_t i;
+
+    for (i = 0U; i < APP_RELAY_TRACK_SIZE; i++) {
+        if (s_relay_track[i].used &&
+            (s_relay_track[i].src_id == src_id) &&
+            (s_relay_track[i].seq == seq)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void app_relay_remember(uint16_t src_id, uint16_t seq)
+{
+    app_relay_track_entry_t *slot = &s_relay_track[s_relay_track_insert_idx];
+
+    slot->used = true;
+    slot->src_id = src_id;
+    slot->seq = seq;
+    s_relay_track_insert_idx++;
+    if (s_relay_track_insert_idx >= APP_RELAY_TRACK_SIZE) {
+        s_relay_track_insert_idx = 0U;
+    }
 }
 
 static bool app_join_id_in_use(uint16_t node_id)
@@ -978,6 +1020,72 @@ static void app_handle_text_frame(const wyresv2_frame_t *frame, int16_t rssi, in
     }
 }
 
+static bool app_should_relay_frame(const wyresv2_frame_t *frame)
+{
+    if (frame == NULL) {
+        return false;
+    }
+
+    if (frame->ttl == 0U) {
+        return false;
+    }
+
+    /* Never relay frames that originated from this node (anti-loop). */
+    if ((s_node_id != APP_NODE_ID_UNASSIGNED) && (frame->src_id == s_node_id)) {
+        return false;
+    }
+
+    if (frame->dst_id == s_node_id) {
+        return false;
+    }
+
+    /*
+     * Unicast frames are relayed.
+     * Broadcast is relayed only for JOIN_ACK to allow multi-hop join.
+     */
+    if (frame->dst_id == APP_BROADCAST_ID) {
+        return (frame->type == MSG_JOIN_ACK);
+    }
+
+    return true;
+}
+
+static void app_relay_frame(const wyresv2_frame_t *frame, link_direction_t from)
+{
+    wyresv2_frame_t relay;
+    uint8_t raw[11U + WYRESV2_MAX_PAYLOAD];
+    uint8_t raw_len;
+    link_direction_t out_dir;
+
+    if (!app_should_relay_frame(frame)) {
+        return;
+    }
+
+    /* Relay once per (src,seq) to avoid ping-pong loops. */
+    if (app_relay_is_duplicate(frame->src_id, frame->seq)) {
+        return;
+    }
+
+    relay = *frame;
+    relay.ttl--;
+
+    raw_len = app_serialize_frame(&relay, raw, (uint8_t)sizeof(raw));
+    if (raw_len == 0U) {
+        return;
+    }
+
+    out_dir = (from == LINK_PREDECESSOR) ? LINK_SUCCESSOR : LINK_PREDECESSOR;
+    if (app_send_raw_dir(out_dir, raw, raw_len)) {
+        app_relay_remember(frame->src_id, frame->seq);
+        return;
+    }
+
+    /* Single-radio fallback (dir may be ignored by backend anyway). */
+    if (app_send_raw(raw, raw_len)) {
+        app_relay_remember(frame->src_id, frame->seq);
+    }
+}
+
 static void app_print_help(void)
 {
     uart1_write_str("Commands:\r\n");
@@ -1176,6 +1284,12 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
         return;
     }
 
+    /*
+     * Multi-hop relay:
+     * if frame is not for this node (or special JOIN_ACK broadcast case), forward it.
+     */
+    app_relay_frame(&frame, from);
+
     if ((APP_COORDINATOR_MODE != 0U) &&
         (frame.src_id != APP_NODE_ID_UNASSIGNED) &&
         (frame.src_id != APP_BROADCAST_ID) &&
@@ -1279,6 +1393,7 @@ static void app_init_identity(void)
 {
     memset(&s_pending_tx, 0, sizeof(s_pending_tx));
     memset(s_rx_track, 0, sizeof(s_rx_track));
+    memset(s_relay_track, 0, sizeof(s_relay_track));
     memset(s_join_table, 0, sizeof(s_join_table));
 
     s_next_seq = 1U;
@@ -1286,6 +1401,7 @@ static void app_init_identity(void)
     s_last_join_req_ms = 0U;
     s_last_heartbeat_ms = 0U;
     s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
+    s_relay_track_insert_idx = 0U;
 
     if (APP_FIXED_NODE_ID != 0U) {
         s_node_id = APP_FIXED_NODE_ID;
