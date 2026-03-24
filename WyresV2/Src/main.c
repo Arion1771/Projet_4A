@@ -114,7 +114,7 @@ typedef struct {
 
 #define APP_UART_LINE_MAX         96U
 #define APP_UART_ECHO             0U
-#define APP_UART_AUTOSUBMIT_MS    900U
+#define APP_UART_AUTOSUBMIT_MS    3000U
 #define APP_RX_TRACK_SIZE         16U
 #define APP_RELAY_TRACK_SIZE      24U
 #define APP_JOIN_TABLE_SIZE       16U
@@ -1608,7 +1608,7 @@ int main(void)
     app_init_identity();
 
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: JOIN_TX_ACKBURST_V3\r\n");
+    uart1_write_str("BUILD: JOIN_TX_ACKBURST_V4\r\n");
     uart1_write_str("MODE: LoRa text + ID join + ACK retransmission\r\n");
     uart1_write_str("cfg coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "1" : "0");
