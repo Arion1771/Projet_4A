@@ -166,6 +166,7 @@ typedef struct {
     bool used;
     uint16_t nonce;
     uint16_t node_id;
+    uint16_t parent_id;
     uint32_t last_seen_ms;
     bool online;
 } app_join_entry_t;
@@ -193,6 +194,8 @@ static uint16_t s_default_dst_id = APP_COORDINATOR_ID;
 static uint16_t s_next_seq = 1U;
 static uint16_t s_join_nonce = 0U;
 static uint16_t s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
+static uint16_t s_chain_tail_id = APP_COORDINATOR_ID;
+static uint16_t s_parent_id = APP_COORDINATOR_ID;
 static uint32_t s_last_join_req_ms = 0U;
 static uint32_t s_last_heartbeat_ms = 0U;
 static bool s_joined = false;
@@ -213,7 +216,6 @@ static uint8_t s_relay_track_insert_idx = 0U;
 static char s_uart_line[APP_UART_LINE_MAX];
 static uint8_t s_uart_line_len = 0U;
 static uint32_t s_uart_last_rx_ms = 0U;
-static bool s_join_req_next_direct = false;
 static volatile uint32_t s_system_ms = 0U;
 static volatile uint8_t s_uart_rx_ring[UART_RX_RING_SIZE];
 static volatile uint8_t s_uart_rx_head = 0U;
@@ -747,15 +749,29 @@ static uint16_t app_join_allocate_id(void)
     return APP_NODE_ID_UNASSIGNED;
 }
 
-static uint16_t app_join_find_or_assign(uint16_t nonce)
+static uint16_t app_join_find_or_assign(uint16_t nonce, uint16_t *out_parent_id, bool *out_is_new)
 {
     uint8_t i;
     int8_t free_idx = -1;
     uint16_t assigned_id;
+    uint16_t parent_id = APP_COORDINATOR_ID;
+
+    if (out_parent_id != NULL) {
+        *out_parent_id = APP_COORDINATOR_ID;
+    }
+    if (out_is_new != NULL) {
+        *out_is_new = false;
+    }
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++) {
         if (s_join_table[i].used) {
             if (s_join_table[i].nonce == nonce) {
+                if (s_join_table[i].parent_id != APP_NODE_ID_UNASSIGNED) {
+                    parent_id = s_join_table[i].parent_id;
+                }
+                if (out_parent_id != NULL) {
+                    *out_parent_id = parent_id;
+                }
                 return s_join_table[i].node_id;
             }
         } else if (free_idx < 0) {
@@ -772,11 +788,24 @@ static uint16_t app_join_find_or_assign(uint16_t nonce)
         return APP_NODE_ID_UNASSIGNED;
     }
 
+    if ((s_chain_tail_id == APP_NODE_ID_UNASSIGNED) || (s_chain_tail_id == APP_BROADCAST_ID)) {
+        s_chain_tail_id = APP_COORDINATOR_ID;
+    }
+    parent_id = s_chain_tail_id;
+
     s_join_table[(uint8_t)free_idx].used = true;
     s_join_table[(uint8_t)free_idx].nonce = nonce;
     s_join_table[(uint8_t)free_idx].node_id = assigned_id;
+    s_join_table[(uint8_t)free_idx].parent_id = parent_id;
     s_join_table[(uint8_t)free_idx].last_seen_ms = platform_millis();
     s_join_table[(uint8_t)free_idx].online = true;
+    s_chain_tail_id = assigned_id;
+    if (out_parent_id != NULL) {
+        *out_parent_id = parent_id;
+    }
+    if (out_is_new != NULL) {
+        *out_is_new = true;
+    }
     return assigned_id;
 }
 
@@ -866,6 +895,8 @@ static void app_print_nodes(void)
         found = true;
         uart1_write_str("[id=");
         uart1_write_u32((uint32_t)s_join_table[i].node_id);
+        uart1_write_str(" parent=");
+        uart1_write_u32((uint32_t)s_join_table[i].parent_id);
         uart1_write_str(" nonce=");
         uart1_write_u32((uint32_t)s_join_table[i].nonce);
         uart1_write_str(" state=");
@@ -1019,6 +1050,7 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
 {
     uint16_t nonce;
     uint16_t assigned_id;
+    uint16_t parent_id;
 
     if ((frame == NULL) || s_joined || (frame->payload_len < 4U)) {
         return;
@@ -1026,6 +1058,11 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
 
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
     assigned_id = (uint16_t)frame->payload[2] | ((uint16_t)frame->payload[3] << 8);
+    if (frame->payload_len >= 6U) {
+        parent_id = (uint16_t)frame->payload[4] | ((uint16_t)frame->payload[5] << 8);
+    } else {
+        parent_id = APP_COORDINATOR_ID;
+    }
 
     if (nonce != s_join_nonce) {
         uart1_write_str("JOIN_ACK ignored nonce=");
@@ -1046,11 +1083,17 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
 
     s_node_id = assigned_id;
     s_joined = true;
-    s_default_dst_id = APP_COORDINATOR_ID;
+    s_parent_id = parent_id;
+    if ((s_parent_id == APP_NODE_ID_UNASSIGNED) || (s_parent_id == APP_BROADCAST_ID)) {
+        s_parent_id = APP_COORDINATOR_ID;
+    }
+    s_default_dst_id = s_parent_id;
     platform_led_set(LED_INSERTED);
 
     uart1_write_str("JOINED node_id=");
     uart1_write_u32((uint32_t)s_node_id);
+    uart1_write_str(" parent=");
+    uart1_write_u32((uint32_t)s_parent_id);
     uart1_write_str("\r\n");
 }
 
@@ -1059,6 +1102,8 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     wyresv2_frame_t reply;
     uint16_t nonce;
     uint16_t assigned_id;
+    uint16_t parent_id;
+    bool is_new_join;
     uint32_t now_ms;
 
     if ((frame == NULL) || (APP_COORDINATOR_MODE == 0U) || (frame->payload_len < 2U)) {
@@ -1066,7 +1111,7 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     }
 
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
-    assigned_id = app_join_find_or_assign(nonce);
+    assigned_id = app_join_find_or_assign(nonce, &parent_id, &is_new_join);
     if (assigned_id == APP_NODE_ID_UNASSIGNED) {
         return;
     }
@@ -1074,11 +1119,13 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     app_mark_node_seen(assigned_id, now_ms);
 
     app_frame_init(&reply, MSG_JOIN_ACK, s_node_id, APP_BROADCAST_ID, s_next_seq++);
-    reply.payload_len = 4U;
+    reply.payload_len = 6U;
     reply.payload[0] = (uint8_t)(nonce & 0xFFU);
     reply.payload[1] = (uint8_t)((nonce >> 8) & 0xFFU);
     reply.payload[2] = (uint8_t)(assigned_id & 0xFFU);
     reply.payload[3] = (uint8_t)((assigned_id >> 8) & 0xFFU);
+    reply.payload[4] = (uint8_t)(parent_id & 0xFFU);
+    reply.payload[5] = (uint8_t)((parent_id >> 8) & 0xFFU);
 
     if (app_send_frame(&reply)) {
         s_join_ack_count++;
@@ -1086,6 +1133,11 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
         uart1_write_u32((uint32_t)nonce);
         uart1_write_str(" -> id=");
         uart1_write_u32((uint32_t)assigned_id);
+        uart1_write_str(" parent=");
+        uart1_write_u32((uint32_t)parent_id);
+        if (is_new_join) {
+            s_default_dst_id = assigned_id;
+        }
         uart1_write_str("\r\n");
     }
 }
@@ -1093,17 +1145,12 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
 static void app_send_join_request(uint32_t now_ms)
 {
     wyresv2_frame_t req;
-    uint16_t dst_id;
+    uint16_t dst_id = APP_BROADCAST_ID;
 
     if (s_joined || (APP_COORDINATOR_MODE != 0U) || (APP_FIXED_NODE_ID != 0U)) {
         return;
     }
 
-    /*
-     * Alternate destination between broadcast and direct coordinator:
-     * this avoids back-to-back TX busy and improves compatibility.
-     */
-    dst_id = s_join_req_next_direct ? APP_COORDINATOR_ID : APP_BROADCAST_ID;
     app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, dst_id, s_next_seq++);
     req.payload_len = 2U;
     req.payload[0] = (uint8_t)(s_join_nonce & 0xFFU);
@@ -1112,7 +1159,6 @@ static void app_send_join_request(uint32_t now_ms)
     if (app_send_frame(&req)) {
         s_join_req_count++;
         s_last_join_req_ms = now_ms;
-        s_join_req_next_direct = !s_join_req_next_direct;
         uart1_write_str("JOIN_REQ nonce=");
         uart1_write_u32((uint32_t)s_join_nonce);
         uart1_write_str(" dst=");
@@ -1338,19 +1384,35 @@ static bool app_should_relay_frame(const wyresv2_frame_t *frame)
         return false;
     }
 
-    if (frame->dst_id == s_node_id) {
+    if ((s_node_id == APP_NODE_ID_UNASSIGNED) || (frame->dst_id == s_node_id)) {
         return false;
     }
 
     /*
-     * Unicast frames are relayed.
-     * Broadcast is relayed for JOIN_REQ/JOIN_ACK to allow multi-hop join.
+     * Broadcast is relayed for JOIN_REQ/JOIN_ACK to allow chain extension.
      */
     if (frame->dst_id == APP_BROADCAST_ID) {
         return (frame->type == MSG_JOIN_ACK) || (frame->type == MSG_JOIN_REQ);
     }
 
-    return true;
+    if ((frame->src_id == APP_NODE_ID_UNASSIGNED) ||
+        (frame->dst_id == APP_NODE_ID_UNASSIGNED) ||
+        (frame->src_id == frame->dst_id)) {
+        return false;
+    }
+
+    /*
+     * Linear unicast relay:
+     * relay only if this node id is strictly between src and dst ids.
+     */
+    if ((frame->src_id < s_node_id) && (s_node_id < frame->dst_id)) {
+        return true;
+    }
+    if ((frame->dst_id < s_node_id) && (s_node_id < frame->src_id)) {
+        return true;
+    }
+
+    return false;
 }
 
 static void app_relay_frame(const wyresv2_frame_t *frame, link_direction_t from)
@@ -1377,7 +1439,11 @@ static void app_relay_frame(const wyresv2_frame_t *frame, link_direction_t from)
         return;
     }
 
-    out_dir = (from == LINK_PREDECESSOR) ? LINK_SUCCESSOR : LINK_PREDECESSOR;
+    if (relay.dst_id == APP_BROADCAST_ID) {
+        out_dir = (from == LINK_PREDECESSOR) ? LINK_SUCCESSOR : LINK_PREDECESSOR;
+    } else {
+        out_dir = (relay.dst_id > s_node_id) ? LINK_SUCCESSOR : LINK_PREDECESSOR;
+    }
     if (app_send_raw_dir(out_dir, raw, raw_len)) {
         app_relay_remember(frame->src_id, frame->seq);
         if ((frame->type == MSG_JOIN_REQ) || (frame->type == MSG_JOIN_ACK)) {
@@ -1422,7 +1488,7 @@ static void app_print_help(void)
     uart1_write_str("  broadcast <text>  -> send broadcast text (no ACK)\r\n");
     uart1_write_str("  join              -> force join request now\r\n");
     uart1_write_str("  help              -> show this help\r\n");
-    uart1_write_str("  <text>            -> send to current dst\r\n");
+    uart1_write_str("  <text>            -> linear send to current dst (n-1 / n+1)\r\n");
 }
 
 static void app_print_identity(void)
@@ -1433,9 +1499,32 @@ static void app_print_identity(void)
     uart1_write_str(s_joined ? "yes" : "no");
     uart1_write_str(" dst=");
     uart1_write_u32((uint32_t)s_default_dst_id);
+    uart1_write_str(" parent=");
+    uart1_write_u32((uint32_t)s_parent_id);
     uart1_write_str(" coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "yes" : "no");
     uart1_write_str("\r\n");
+}
+
+static bool app_is_linear_neighbor_id(uint16_t node_id)
+{
+    if (!s_joined || (s_node_id == APP_NODE_ID_UNASSIGNED)) {
+        return false;
+    }
+
+    if ((node_id == APP_NODE_ID_UNASSIGNED) || (node_id == APP_BROADCAST_ID)) {
+        return false;
+    }
+
+    if ((s_node_id > APP_COORDINATOR_ID) && (node_id == (uint16_t)(s_node_id - 1U))) {
+        return true;
+    }
+
+    if ((s_node_id < APP_JOIN_LAST_ASSIGN_ID) && (node_id == (uint16_t)(s_node_id + 1U))) {
+        return true;
+    }
+
+    return false;
 }
 
 static void app_send_text_from_line(uint16_t dst_id, char *text, uint32_t now_ms)
@@ -1523,6 +1612,12 @@ static void app_handle_uart_line(char *line, uint32_t now_ms)
             uart1_write_str("Usage: dst <id>\r\n");
             return;
         }
+        if ((APP_COORDINATOR_MODE == 0U) &&
+            s_joined &&
+            !app_is_linear_neighbor_id(parsed_id)) {
+            uart1_write_str("ERR: linear mode allows only n-1 or n+1 in dst\r\n");
+            return;
+        }
         s_default_dst_id = parsed_id;
         uart1_write_str("Default dst=");
         uart1_write_u32((uint32_t)s_default_dst_id);
@@ -1553,6 +1648,14 @@ static void app_handle_uart_line(char *line, uint32_t now_ms)
             return;
         }
         app_send_text_from_line(APP_BROADCAST_ID, msg_ptr, now_ms);
+        return;
+    }
+
+    if ((APP_COORDINATOR_MODE == 0U) &&
+        s_joined &&
+        (s_default_dst_id != APP_BROADCAST_ID) &&
+        !app_is_linear_neighbor_id(s_default_dst_id)) {
+        uart1_write_str("ERR: default dst must be n-1 or n+1 in linear mode\r\n");
         return;
     }
 
@@ -1612,7 +1715,6 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
     bool parsed;
     uint32_t now_ms;
 
-    (void)from;
     s_rx_count++;
 
     parsed = app_parse_frame(&frame, data, len);
@@ -1741,6 +1843,12 @@ static void app_print_status(uint32_t now_ms)
     uart1_write_hex8(opm);
     uart1_write_str(" TV=");
     uart1_write_u32((uint32_t)platform_radio_dbg_tx_variant());
+    uart1_write_str(" tail=");
+    uart1_write_u32((uint32_t)s_chain_tail_id);
+    uart1_write_str(" dst=");
+    uart1_write_u32((uint32_t)s_default_dst_id);
+    uart1_write_str(" parent=");
+    uart1_write_u32((uint32_t)s_parent_id);
     uart1_write_str(" LQ=");
     uart1_write_u32((uint32_t)s_link_quality);
     uart1_write_str(" LAge=");
@@ -1768,8 +1876,9 @@ static void app_init_identity(void)
     s_last_join_req_ms = 0U;
     s_last_heartbeat_ms = 0U;
     s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
+    s_chain_tail_id = APP_COORDINATOR_ID;
+    s_parent_id = APP_COORDINATOR_ID;
     s_relay_track_insert_idx = 0U;
-    s_join_req_next_direct = false;
     s_link_quality = 0U;
     s_link_has_sample = false;
     s_link_last_coord_rx_ms = 0U;

@@ -81,6 +81,7 @@ typedef struct
     uint8_t used;
     uint16_t nonce;
     uint16_t node_id;
+    uint16_t parent_id;
     uint32_t last_seen_ms;
     uint8_t online;
 } app_join_entry_t;
@@ -104,16 +105,10 @@ typedef struct
 
 typedef struct
 {
-    uint8_t used;
-    uint16_t src_id;
-    uint16_t seq;
-} app_relay_track_t;
-
-typedef struct
-{
     uint8_t active;
     uint16_t nonce;
     uint16_t assigned_id;
+    uint16_t parent_id;
     uint8_t repeats_left;
     uint32_t next_tx_ms;
 } app_join_ack_burst_t;
@@ -164,9 +159,9 @@ static uint8_t tx_queue_count = 0U;
 static app_pending_ack_t pending_ack;
 static app_join_ack_burst_t pending_join_ack;
 static app_ack_burst_t pending_ack_burst;
-static app_relay_track_t relay_track[APP_RELAY_TRACK_SIZE];
 static app_join_entry_t join_table[APP_JOIN_TABLE_SIZE];
 static uint16_t next_assigned_id = APP_JOIN_FIRST_ID;
+static uint16_t chain_tail_id = APP_COORDINATOR_ID;
 static uint16_t next_seq = 1U;
 static uint16_t default_dst_id = APP_BROADCAST_ID;
 static uint8_t uart_rx_seen = 0U;
@@ -178,7 +173,6 @@ static app_uart_ring_t uart2_rx_ring;
 static char uart_line[APP_UART_LINE_MAX];
 static uint8_t uart_line_len = 0U;
 static uint8_t uart_line_src = 0U; /* 0=none, 1=USART1, 2=USART2 */
-static uint8_t relay_track_insert_idx = 0U;
 
 static uint32_t stat_rx_total = 0U;
 static uint32_t stat_tx_started = 0U;
@@ -233,11 +227,9 @@ static uint8_t App_QueueFrame(const app_frame_t *frame);
 
 static uint8_t App_JoinIdInUse(uint16_t node_id);
 static uint16_t App_JoinAllocateId(void);
-static uint16_t App_JoinFindOrAssign(uint16_t nonce);
+static uint16_t App_JoinFindOrAssign(uint16_t nonce, uint16_t *out_parent_id, uint8_t *out_is_new);
 static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms);
 static void App_CheckNodeDisconnects(uint32_t now_ms);
-static uint8_t App_RelayIsDuplicate(uint16_t src_id, uint16_t seq);
-static void App_RelayRemember(uint16_t src_id, uint16_t seq);
 static void App_RelayFrame(const app_frame_t *frame);
 static void App_PrintNodes(void);
 static void App_PrintStatus(void);
@@ -245,7 +237,7 @@ static void App_PrintStatus(void);
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms);
 static void App_ProcessPendingAck(uint32_t now_ms);
 static void App_ProcessAckFrame(const app_frame_t *frame);
-static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint32_t now_ms);
+static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint16_t parent_id, uint32_t now_ms);
 static void App_ProcessJoinAckBurst(uint32_t now_ms);
 static void App_ScheduleAckBurst(uint16_t dst_id, uint16_t seq, uint32_t now_ms);
 static void App_ProcessAckBurst(uint32_t now_ms);
@@ -276,9 +268,8 @@ int main(void)
     memset(&pending_ack, 0, sizeof(pending_ack));
     memset(&pending_join_ack, 0, sizeof(pending_join_ack));
     memset(&pending_ack_burst, 0, sizeof(pending_ack_burst));
-    memset(relay_track, 0, sizeof(relay_track));
     memset(join_table, 0, sizeof(join_table));
-    relay_track_insert_idx = 0U;
+    chain_tail_id = APP_COORDINATOR_ID;
 
     Uart_Log("BOOT LORAPROJET\r\n");
     Uart_Log("MODE: CARD1 COORDINATOR (LORAE5)\r\n");
@@ -683,12 +674,22 @@ static uint16_t App_JoinAllocateId(void)
     return APP_NODE_UNASSIGNED;
 }
 
-static uint16_t App_JoinFindOrAssign(uint16_t nonce)
+static uint16_t App_JoinFindOrAssign(uint16_t nonce, uint16_t *out_parent_id, uint8_t *out_is_new)
 {
     uint8_t i;
     int8_t free_idx = -1;
     uint16_t id;
+    uint16_t parent_id = APP_COORDINATOR_ID;
     uint32_t now_ms = HAL_GetTick();
+
+    if (out_parent_id != NULL)
+    {
+        *out_parent_id = APP_COORDINATOR_ID;
+    }
+    if (out_is_new != NULL)
+    {
+        *out_is_new = 0U;
+    }
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
     {
@@ -697,6 +698,14 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce)
             if (join_table[i].nonce == nonce)
             {
                 App_MarkNodeSeen(join_table[i].node_id, now_ms);
+                if (join_table[i].parent_id != APP_NODE_UNASSIGNED)
+                {
+                    parent_id = join_table[i].parent_id;
+                }
+                if (out_parent_id != NULL)
+                {
+                    *out_parent_id = parent_id;
+                }
                 return join_table[i].node_id;
             }
         }
@@ -717,11 +726,27 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce)
         return APP_NODE_UNASSIGNED;
     }
 
+    if ((chain_tail_id == APP_NODE_UNASSIGNED) || (chain_tail_id == APP_BROADCAST_ID))
+    {
+        chain_tail_id = APP_COORDINATOR_ID;
+    }
+    parent_id = chain_tail_id;
+
     join_table[(uint8_t)free_idx].used = 1U;
     join_table[(uint8_t)free_idx].nonce = nonce;
     join_table[(uint8_t)free_idx].node_id = id;
+    join_table[(uint8_t)free_idx].parent_id = parent_id;
     join_table[(uint8_t)free_idx].last_seen_ms = now_ms;
     join_table[(uint8_t)free_idx].online = 1U;
+    chain_tail_id = id;
+    if (out_parent_id != NULL)
+    {
+        *out_parent_id = parent_id;
+    }
+    if (out_is_new != NULL)
+    {
+        *out_is_new = 1U;
+    }
     return id;
 }
 
@@ -856,83 +881,18 @@ static void App_CheckNodeDisconnects(uint32_t now_ms)
     }
 }
 
-static uint8_t App_RelayIsDuplicate(uint16_t src_id, uint16_t seq)
-{
-    uint8_t i;
-
-    for (i = 0U; i < APP_RELAY_TRACK_SIZE; i++)
-    {
-        if (relay_track[i].used &&
-            (relay_track[i].src_id == src_id) &&
-            (relay_track[i].seq == seq))
-        {
-            return 1U;
-        }
-    }
-
-    return 0U;
-}
-
-static void App_RelayRemember(uint16_t src_id, uint16_t seq)
-{
-    app_relay_track_t *slot = &relay_track[relay_track_insert_idx];
-
-    slot->used = 1U;
-    slot->src_id = src_id;
-    slot->seq = seq;
-    relay_track_insert_idx++;
-    if (relay_track_insert_idx >= APP_RELAY_TRACK_SIZE)
-    {
-        relay_track_insert_idx = 0U;
-    }
-}
-
 static void App_RelayFrame(const app_frame_t *frame)
 {
-    app_frame_t relay;
-
     if (frame == NULL)
     {
         return;
     }
 
-    if (frame->ttl == 0U)
-    {
-        return;
-    }
-
-    if (frame->dst_id == APP_COORDINATOR_ID)
-    {
-        return;
-    }
-
-    if (frame->dst_id == APP_BROADCAST_ID)
-    {
-        return;
-    }
-
-    /* Anti-loop: never relay a frame that originated from this coordinator. */
-    if (frame->src_id == APP_COORDINATOR_ID)
-    {
-        return;
-    }
-
-    if (App_RelayIsDuplicate(frame->src_id, frame->seq))
-    {
-        return;
-    }
-
-    relay = *frame;
-    relay.ttl--;
-    if (App_QueueFrame(&relay))
-    {
-        App_RelayRemember(frame->src_id, frame->seq);
-        Uart_LogTimedf("RELAY src=%u dst=%u seq=%u ttl=%u\r\n",
-                       (unsigned)frame->src_id,
-                       (unsigned)frame->dst_id,
-                       (unsigned)frame->seq,
-                       (unsigned)relay.ttl);
-    }
+    /*
+     * Linear topology: coordinator is chain endpoint and does not relay unicast
+     * traffic between nodes.
+     */
+    (void)frame;
 }
 
 static void App_PrintNodes(void)
@@ -956,8 +916,9 @@ static void App_PrintNodes(void)
             {
                 age_ms = 0U;
             }
-            Uart_Logf("[id=%u nonce=%u state=%s ageMs=%lu] ",
+            Uart_Logf("[id=%u parent=%u nonce=%u state=%s ageMs=%lu] ",
                       (unsigned)join_table[i].node_id,
+                      (unsigned)join_table[i].parent_id,
                       (unsigned)join_table[i].nonce,
                       (join_table[i].online != 0U) ? "online" : "offline",
                       (unsigned long)age_ms);
@@ -1001,6 +962,9 @@ static void App_PrintStatus(void)
               (unsigned)uart_line_src,
               (unsigned long)uart1_rx_ring.overflow_count,
               (unsigned long)uart2_rx_ring.overflow_count);
+    Uart_Logf("STATUS chainTail=%u defaultDst=%u\r\n",
+              (unsigned)chain_tail_id,
+              (unsigned)default_dst_id);
 }
 
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms)
@@ -1076,11 +1040,12 @@ static void App_ProcessAckFrame(const app_frame_t *frame)
     }
 }
 
-static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint32_t now_ms)
+static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint16_t parent_id, uint32_t now_ms)
 {
     pending_join_ack.active = 1U;
     pending_join_ack.nonce = nonce;
     pending_join_ack.assigned_id = assigned_id;
+    pending_join_ack.parent_id = parent_id;
     pending_join_ack.repeats_left = APP_JOIN_ACK_REPEAT;
     pending_join_ack.next_tx_ms = now_ms + APP_JOIN_ACK_DELAY_MS;
 }
@@ -1100,11 +1065,13 @@ static void App_ProcessJoinAckBurst(uint32_t now_ms)
     }
 
     App_InitFrame(&reply, APP_MSG_JOIN_ACK, APP_COORDINATOR_ID, APP_BROADCAST_ID, next_seq++);
-    reply.payload_len = 4U;
+    reply.payload_len = 6U;
     reply.payload[0] = (uint8_t)(pending_join_ack.nonce & 0xFFU);
     reply.payload[1] = (uint8_t)((pending_join_ack.nonce >> 8) & 0xFFU);
     reply.payload[2] = (uint8_t)(pending_join_ack.assigned_id & 0xFFU);
     reply.payload[3] = (uint8_t)((pending_join_ack.assigned_id >> 8) & 0xFFU);
+    reply.payload[4] = (uint8_t)(pending_join_ack.parent_id & 0xFFU);
+    reply.payload[5] = (uint8_t)((pending_join_ack.parent_id >> 8) & 0xFFU);
 
     if (!App_QueueFrame(&reply))
     {
@@ -1172,6 +1139,8 @@ static void App_HandleJoinReq(const app_frame_t *frame)
 {
     uint16_t nonce;
     uint16_t assigned_id;
+    uint16_t parent_id;
+    uint8_t is_new_join;
     uint32_t now_ms;
 
     if ((frame == NULL) || (frame->payload_len < 2U))
@@ -1185,7 +1154,7 @@ static void App_HandleJoinReq(const app_frame_t *frame)
     }
 
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
-    assigned_id = App_JoinFindOrAssign(nonce);
+    assigned_id = App_JoinFindOrAssign(nonce, &parent_id, &is_new_join);
     if (assigned_id == APP_NODE_UNASSIGNED)
     {
         return;
@@ -1197,10 +1166,15 @@ static void App_HandleJoinReq(const app_frame_t *frame)
                    (unsigned)nonce);
 
     now_ms = HAL_GetTick();
-    App_ScheduleJoinAck(nonce, assigned_id, now_ms);
-    Uart_LogTimedf("JOIN_ACK scheduled nonce=%u -> id=%u x%u\r\n",
+    App_ScheduleJoinAck(nonce, assigned_id, parent_id, now_ms);
+    if (is_new_join != 0U)
+    {
+        default_dst_id = assigned_id;
+    }
+    Uart_LogTimedf("JOIN_ACK scheduled nonce=%u -> id=%u parent=%u x%u\r\n",
                    (unsigned)nonce,
                    (unsigned)assigned_id,
+                   (unsigned)parent_id,
                    (unsigned)APP_JOIN_ACK_REPEAT);
 }
 
@@ -1423,7 +1397,7 @@ static void App_PrintHelp(void)
     Uart_Log("  send <id> <text>    -> send reliable text (ACK/retry)\r\n");
     Uart_Log("  broadcast <text>    -> send broadcast text\r\n");
     Uart_Log("  help                -> show this help\r\n");
-    Uart_Log("  <text>              -> send to default destination\r\n");
+    Uart_Log("  <text>              -> send to default destination (auto = last joined node)\r\n");
     Uart_Log("Note: lines auto-submit after a short pause.\r\n");
 }
 
