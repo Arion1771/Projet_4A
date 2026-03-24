@@ -42,11 +42,14 @@
 #define APP_NODE_OFFLINE_MS    30000U
 #define APP_ACK_TIMEOUT_MS     700U
 #define APP_ACK_MAX_RETRIES    3U
+#define APP_ACK_BURST_REPEAT   2U
+#define APP_ACK_BURST_DELAY_MS 80U
+#define APP_ACK_BURST_GAP_MS   80U
 /* 2 = USART2 (PA2/PA3, usually ST-LINK VCP), 1 = USART1 (PB6/PB7) */
 #define APP_CONSOLE_UART       2U
 #define APP_UART_MIRROR_BOTH   1U
 #define APP_UART_ECHO          0U
-#define APP_UART_AUTOSUBMIT_MS 180U
+#define APP_UART_AUTOSUBMIT_MS 900U
 
 typedef enum
 {
@@ -114,6 +117,15 @@ typedef struct
     uint32_t next_tx_ms;
 } app_join_ack_burst_t;
 
+typedef struct
+{
+    uint8_t active;
+    uint16_t dst_id;
+    uint16_t seq;
+    uint8_t repeats_left;
+    uint32_t next_tx_ms;
+} app_ack_burst_t;
+
 static UART_HandleTypeDef huart1;
 static UART_HandleTypeDef huart2;
 static uint8_t uart1_ready = 0U;
@@ -142,6 +154,7 @@ static uint8_t tx_queue_count = 0U;
 
 static app_pending_ack_t pending_ack;
 static app_join_ack_burst_t pending_join_ack;
+static app_ack_burst_t pending_ack_burst;
 static app_relay_track_t relay_track[APP_RELAY_TRACK_SIZE];
 static app_join_entry_t join_table[APP_JOIN_TABLE_SIZE];
 static uint16_t next_assigned_id = APP_JOIN_FIRST_ID;
@@ -218,6 +231,8 @@ static void App_ProcessPendingAck(uint32_t now_ms);
 static void App_ProcessAckFrame(const app_frame_t *frame);
 static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint32_t now_ms);
 static void App_ProcessJoinAckBurst(uint32_t now_ms);
+static void App_ScheduleAckBurst(uint16_t dst_id, uint16_t seq, uint32_t now_ms);
+static void App_ProcessAckBurst(uint32_t now_ms);
 
 static void App_HandleJoinReq(const app_frame_t *frame);
 static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr);
@@ -243,6 +258,7 @@ int main(void)
 
     memset(&pending_ack, 0, sizeof(pending_ack));
     memset(&pending_join_ack, 0, sizeof(pending_join_ack));
+    memset(&pending_ack_burst, 0, sizeof(pending_ack_burst));
     memset(relay_track, 0, sizeof(relay_track));
     memset(join_table, 0, sizeof(join_table));
     relay_track_insert_idx = 0U;
@@ -250,6 +266,7 @@ int main(void)
     Uart_Log("BOOT LORAPROJET\r\n");
     Uart_Log("MODE: CARD1 COORDINATOR (LORAE5)\r\n");
     Uart_Log("IRQ MODE: HYBRID_ISR_POLL\r\n");
+    Uart_Log("ACK BURST: ON\r\n");
     Uart_Log("BUILD: " __DATE__ " " __TIME__ "\r\n");
 #if (APP_CONSOLE_UART == 2U)
     Uart_Log("UART CONSOLE: USART2 (PA2/PA3)\r\n");
@@ -344,6 +361,7 @@ int main(void)
         App_ProcessPendingAck(now_ms);
         App_CheckNodeDisconnects(now_ms);
         App_ProcessJoinAckBurst(now_ms);
+        App_ProcessAckBurst(now_ms);
         App_TxPump();
     }
 }
@@ -864,9 +882,10 @@ static void App_PrintStatus(void)
               (unsigned long)stat_ack_rx,
               (unsigned long)stat_ack_timeout,
               (unsigned long)stat_retry);
-    Uart_Logf("STATUS queue=%u pendingAck=%u pendingJoinAck=%u txPending=%u radioSt=%u\r\n",
+    Uart_Logf("STATUS queue=%u pendingAck=%u pendingAckBurst=%u pendingJoinAck=%u txPending=%u radioSt=%u\r\n",
               (unsigned)tx_queue_count,
               (unsigned)pending_ack.active,
+              (unsigned)pending_ack_burst.active,
               (unsigned)pending_join_ack.active,
               (unsigned)tx_pending,
               (unsigned)st);
@@ -993,6 +1012,50 @@ static void App_ProcessJoinAckBurst(uint32_t now_ms)
     }
 }
 
+static void App_ScheduleAckBurst(uint16_t dst_id, uint16_t seq, uint32_t now_ms)
+{
+    pending_ack_burst.active = 1U;
+    pending_ack_burst.dst_id = dst_id;
+    pending_ack_burst.seq = seq;
+    pending_ack_burst.repeats_left = APP_ACK_BURST_REPEAT;
+    pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_DELAY_MS;
+}
+
+static void App_ProcessAckBurst(uint32_t now_ms)
+{
+    app_frame_t ack;
+
+    if (pending_ack_burst.active == 0U)
+    {
+        return;
+    }
+
+    if ((int32_t)(now_ms - pending_ack_burst.next_tx_ms) < 0)
+    {
+        return;
+    }
+
+    App_InitFrame(&ack, APP_MSG_ACK, APP_COORDINATOR_ID, pending_ack_burst.dst_id, pending_ack_burst.seq);
+    ack.payload_len = 0U;
+
+    if (!App_QueueFrame(&ack))
+    {
+        pending_ack_burst.next_tx_ms = now_ms + 30U;
+        return;
+    }
+
+    stat_ack_tx++;
+    pending_ack_burst.repeats_left--;
+    if (pending_ack_burst.repeats_left == 0U)
+    {
+        pending_ack_burst.active = 0U;
+    }
+    else
+    {
+        pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_GAP_MS;
+    }
+}
+
 static void App_HandleJoinReq(const app_frame_t *frame)
 {
     uint16_t nonce;
@@ -1032,6 +1095,7 @@ static void App_HandleJoinReq(const app_frame_t *frame)
 static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr)
 {
     app_frame_t ack;
+    uint32_t now_ms;
 
     if (frame == NULL)
     {
@@ -1070,11 +1134,13 @@ static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr)
 
     if ((frame->dst_id != APP_BROADCAST_ID) && (frame->src_id != APP_NODE_UNASSIGNED))
     {
+        now_ms = HAL_GetTick();
         App_InitFrame(&ack, APP_MSG_ACK, APP_COORDINATOR_ID, frame->src_id, frame->seq);
         if (App_QueueFrame(&ack))
         {
             stat_ack_tx++;
         }
+        App_ScheduleAckBurst(frame->src_id, frame->seq, now_ms);
     }
 }
 

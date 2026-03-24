@@ -111,7 +111,7 @@ typedef struct {
 
 #define APP_UART_LINE_MAX         96U
 #define APP_UART_ECHO             0U
-#define APP_UART_AUTOSUBMIT_MS    180U
+#define APP_UART_AUTOSUBMIT_MS    900U
 #define APP_RX_TRACK_SIZE         16U
 #define APP_RELAY_TRACK_SIZE      24U
 #define APP_JOIN_TABLE_SIZE       16U
