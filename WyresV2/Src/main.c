@@ -102,6 +102,9 @@ typedef struct {
 
 #define APP_ACK_TIMEOUT_MS        700U
 #define APP_ACK_MAX_RETRIES       3U
+#define APP_ACK_BURST_REPEAT      2U
+#define APP_ACK_BURST_DELAY_MS    80U
+#define APP_ACK_BURST_GAP_MS      80U
 #define APP_RETRY_BACKOFF_MS      120U
 #define APP_JOIN_RETRY_MS         2000U
 #define APP_HEARTBEAT_PERIOD_MS   3000U
@@ -148,6 +151,14 @@ typedef struct {
     bool online;
 } app_join_entry_t;
 
+typedef struct {
+    bool active;
+    uint16_t dst_id;
+    uint16_t seq;
+    uint8_t repeats_left;
+    uint32_t next_tx_ms;
+} app_ack_burst_t;
+
 static volatile uint32_t s_rx_count = 0U;
 static volatile uint32_t s_tx_count = 0U;
 static volatile uint32_t s_retry_count = 0U;
@@ -168,6 +179,7 @@ static uint32_t s_last_heartbeat_ms = 0U;
 static bool s_joined = false;
 
 static app_pending_tx_t s_pending_tx;
+static app_ack_burst_t s_pending_ack_burst;
 static app_rx_track_entry_t s_rx_track[APP_RX_TRACK_SIZE];
 static app_relay_track_entry_t s_relay_track[APP_RELAY_TRACK_SIZE];
 static app_join_entry_t s_join_table[APP_JOIN_TABLE_SIZE];
@@ -762,14 +774,62 @@ static void app_print_nodes(void)
 static void app_send_ack(uint16_t dst_id, uint16_t ack_seq)
 {
     wyresv2_frame_t ack;
+    uint32_t now_ms;
 
     if (s_node_id == APP_NODE_ID_UNASSIGNED) {
         return;
     }
 
+    now_ms = platform_millis();
     app_frame_init(&ack, MSG_ACK, s_node_id, dst_id, ack_seq);
     if (app_send_frame(&ack)) {
         s_ack_tx_count++;
+    }
+
+    if ((dst_id != APP_NODE_ID_UNASSIGNED) && (dst_id != APP_BROADCAST_ID)) {
+        s_pending_ack_burst.active = true;
+        s_pending_ack_burst.dst_id = dst_id;
+        s_pending_ack_burst.seq = ack_seq;
+        s_pending_ack_burst.repeats_left = APP_ACK_BURST_REPEAT;
+        s_pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_DELAY_MS;
+    }
+}
+
+static void app_process_ack_burst(uint32_t now_ms)
+{
+    wyresv2_frame_t ack;
+
+    if (!s_pending_ack_burst.active) {
+        return;
+    }
+
+    if (s_node_id == APP_NODE_ID_UNASSIGNED) {
+        s_pending_ack_burst.active = false;
+        return;
+    }
+
+    if ((int32_t)(now_ms - s_pending_ack_burst.next_tx_ms) < 0) {
+        return;
+    }
+
+    app_frame_init(&ack,
+                   MSG_ACK,
+                   s_node_id,
+                   s_pending_ack_burst.dst_id,
+                   s_pending_ack_burst.seq);
+    ack.payload_len = 0U;
+
+    if (!app_send_frame(&ack)) {
+        s_pending_ack_burst.next_tx_ms = now_ms + 30U;
+        return;
+    }
+
+    s_ack_tx_count++;
+    s_pending_ack_burst.repeats_left--;
+    if (s_pending_ack_burst.repeats_left == 0U) {
+        s_pending_ack_burst.active = false;
+    } else {
+        s_pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_GAP_MS;
     }
 }
 
@@ -1429,6 +1489,7 @@ static void app_periodic(uint32_t now_ms)
     app_send_heartbeat(now_ms);
     app_check_node_disconnects(now_ms);
     app_pending_process(now_ms);
+    app_process_ack_burst(now_ms);
 }
 
 static void app_print_status(uint32_t now_ms)
@@ -1450,6 +1511,8 @@ static void app_print_status(uint32_t now_ms)
     uart1_write_u32(s_ack_tx_count);
     uart1_write_str(" ACKrx=");
     uart1_write_u32(s_ack_rx_count);
+    uart1_write_str(" AB=");
+    uart1_write_u32((uint32_t)(s_pending_ack_burst.active ? 1U : 0U));
     uart1_write_str(" RTY=");
     uart1_write_u32(s_retry_count);
     uart1_write_str(" ATO=");
@@ -1482,6 +1545,7 @@ static void app_print_status(uint32_t now_ms)
 static void app_init_identity(void)
 {
     memset(&s_pending_tx, 0, sizeof(s_pending_tx));
+    memset(&s_pending_ack_burst, 0, sizeof(s_pending_ack_burst));
     memset(s_rx_track, 0, sizeof(s_rx_track));
     memset(s_relay_track, 0, sizeof(s_relay_track));
     memset(s_join_table, 0, sizeof(s_join_table));
@@ -1544,7 +1608,7 @@ int main(void)
     app_init_identity();
 
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: JOIN_TX_FALLBACK_V2\r\n");
+    uart1_write_str("BUILD: JOIN_TX_ACKBURST_V3\r\n");
     uart1_write_str("MODE: LoRa text + ID join + ACK retransmission\r\n");
     uart1_write_str("cfg coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "1" : "0");
