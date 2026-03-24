@@ -211,6 +211,7 @@ static uint8_t App_RelayIsDuplicate(uint16_t src_id, uint16_t seq);
 static void App_RelayRemember(uint16_t src_id, uint16_t seq);
 static void App_RelayFrame(const app_frame_t *frame);
 static void App_PrintNodes(void);
+static void App_PrintStatus(void);
 
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms);
 static void App_ProcessPendingAck(uint32_t now_ms);
@@ -843,6 +844,34 @@ static void App_PrintNodes(void)
     Uart_Log("\r\n");
 }
 
+static void App_PrintStatus(void)
+{
+    RadioState_t st = Radio.GetStatus();
+
+    Uart_Logf("STATUS rx=%lu txStart=%lu txDone=%lu txTo=%lu txFail=%lu txRec=%lu parseErr=%lu\r\n",
+              (unsigned long)stat_rx_total,
+              (unsigned long)stat_tx_started,
+              (unsigned long)stat_tx_done,
+              (unsigned long)stat_tx_timeout,
+              (unsigned long)stat_tx_fail,
+              (unsigned long)stat_tx_recover,
+              (unsigned long)stat_parse_err);
+    Uart_Logf("STATUS joinReq=%lu joinAck=%lu textRx=%lu ackTx=%lu ackRx=%lu ackTo=%lu retry=%lu\r\n",
+              (unsigned long)stat_join_req,
+              (unsigned long)stat_join_ack,
+              (unsigned long)stat_text_rx,
+              (unsigned long)stat_ack_tx,
+              (unsigned long)stat_ack_rx,
+              (unsigned long)stat_ack_timeout,
+              (unsigned long)stat_retry);
+    Uart_Logf("STATUS queue=%u pendingAck=%u pendingJoinAck=%u txPending=%u radioSt=%u\r\n",
+              (unsigned)tx_queue_count,
+              (unsigned)pending_ack.active,
+              (unsigned)pending_join_ack.active,
+              (unsigned)tx_pending,
+              (unsigned)st);
+}
+
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms)
 {
     if ((raw == NULL) || (raw_len == 0U))
@@ -1178,6 +1207,7 @@ static void App_PrintHelp(void)
     Uart_Log("Commands:\r\n");
     Uart_Log("  id                  -> show coordinator id\r\n");
     Uart_Log("  nodes               -> list joined nodes\r\n");
+    Uart_Log("  status              -> print radio/protocol counters\r\n");
     Uart_Log("  dst <id>            -> set default destination\r\n");
     Uart_Log("  send <id> <text>    -> send reliable text (ACK/retry)\r\n");
     Uart_Log("  broadcast <text>    -> send broadcast text\r\n");
@@ -1219,6 +1249,12 @@ static void App_HandleUartLine(char *line, uint32_t now_ms)
     if (strcmp(cursor, "nodes") == 0)
     {
         App_PrintNodes();
+        return;
+    }
+
+    if (strcmp(cursor, "status") == 0)
+    {
+        App_PrintStatus();
         return;
     }
 

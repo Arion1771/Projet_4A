@@ -176,6 +176,7 @@ static uint8_t s_relay_track_insert_idx = 0U;
 static char s_uart_line[APP_UART_LINE_MAX];
 static uint8_t s_uart_line_len = 0U;
 static uint32_t s_uart_last_rx_ms = 0U;
+static bool s_join_req_next_direct = false;
 
 static void app_print_status(uint32_t now_ms);
 
@@ -902,52 +903,43 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
 static void app_send_join_request(uint32_t now_ms)
 {
     wyresv2_frame_t req;
-    bool sent_any = false;
+    uint16_t dst_id;
 
     if (s_joined || (APP_COORDINATOR_MODE != 0U) || (APP_FIXED_NODE_ID != 0U)) {
         return;
     }
 
-    /* First try broadcast (best for multi-hop discovery). */
-    app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, APP_BROADCAST_ID, s_next_seq++);
-    req.payload_len = 2U;
-    req.payload[0] = (uint8_t)(s_join_nonce & 0xFFU);
-    req.payload[1] = (uint8_t)((s_join_nonce >> 8) & 0xFFU);
-
-    if (app_send_frame(&req)) {
-        sent_any = true;
-        s_join_req_count++;
-        uart1_write_str("JOIN_REQ nonce=");
-        uart1_write_u32((uint32_t)s_join_nonce);
-        uart1_write_str(" dst=broadcast");
-        uart1_write_str("\r\n");
-    }
-
     /*
-     * Also try direct coordinator destination for compatibility with nodes
-     * that may not relay broadcast JOIN_REQ yet.
+     * Alternate destination between broadcast and direct coordinator:
+     * this avoids back-to-back TX busy and improves compatibility.
      */
-    app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, APP_COORDINATOR_ID, s_next_seq++);
+    dst_id = s_join_req_next_direct ? APP_COORDINATOR_ID : APP_BROADCAST_ID;
+    app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, dst_id, s_next_seq++);
     req.payload_len = 2U;
     req.payload[0] = (uint8_t)(s_join_nonce & 0xFFU);
     req.payload[1] = (uint8_t)((s_join_nonce >> 8) & 0xFFU);
 
     if (app_send_frame(&req)) {
-        sent_any = true;
         s_join_req_count++;
+        s_last_join_req_ms = now_ms;
+        s_join_req_next_direct = !s_join_req_next_direct;
         uart1_write_str("JOIN_REQ nonce=");
         uart1_write_u32((uint32_t)s_join_nonce);
         uart1_write_str(" dst=");
-        uart1_write_u32((uint32_t)APP_COORDINATOR_ID);
+        if (dst_id == APP_BROADCAST_ID) {
+            uart1_write_str("broadcast");
+        } else {
+            uart1_write_u32((uint32_t)dst_id);
+        }
         uart1_write_str("\r\n");
-    }
-
-    if (!sent_any) {
-        uart1_write_str("JOIN_REQ tx busy\r\n");
-    }
-
-    if (sent_any) {
-        s_last_join_req_ms = now_ms;
+    } else {
+        uart1_write_str("JOIN_REQ tx busy dst=");
+        if (dst_id == APP_BROADCAST_ID) {
+            uart1_write_str("broadcast");
+        } else {
+            uart1_write_u32((uint32_t)dst_id);
+        }
+        uart1_write_str("\r\n");
     }
 }
 
@@ -1473,6 +1465,7 @@ static void app_init_identity(void)
     s_last_heartbeat_ms = 0U;
     s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
     s_relay_track_insert_idx = 0U;
+    s_join_req_next_direct = false;
 
     if (APP_FIXED_NODE_ID != 0U) {
         s_node_id = APP_FIXED_NODE_ID;
@@ -1524,7 +1517,7 @@ int main(void)
     app_init_identity();
 
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: JOIN_ACK_RETRY_UART\r\n");
+    uart1_write_str("BUILD: JOIN_ALT_DST_STATUS\r\n");
     uart1_write_str("MODE: LoRa text + ID join + ACK retransmission\r\n");
     uart1_write_str("cfg coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "1" : "0");
