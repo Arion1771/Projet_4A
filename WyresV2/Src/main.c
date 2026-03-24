@@ -88,6 +88,15 @@ typedef struct {
 #define USART_SR_TXE         (1UL << 7)
 #define USART_SR_TC          (1UL << 6)
 
+#define SYSTICK_BASE         0xE000E010UL
+#define SYSTICK_CSR          (*(volatile uint32_t *)(SYSTICK_BASE + 0x0UL))
+#define SYSTICK_RVR          (*(volatile uint32_t *)(SYSTICK_BASE + 0x4UL))
+#define SYSTICK_CVR          (*(volatile uint32_t *)(SYSTICK_BASE + 0x8UL))
+
+#define SYSTICK_CSR_ENABLE   (1UL << 0)
+#define SYSTICK_CSR_TICKINT  (1UL << 1)
+#define SYSTICK_CSR_CLKSRC   (1UL << 2)
+
 /*
  * Network behavior knobs:
  * - Set APP_COORDINATOR_MODE=1 on exactly one board to assign sequential IDs.
@@ -108,7 +117,7 @@ typedef struct {
 #define APP_RETRY_BACKOFF_MS      120U
 #define APP_JOIN_RETRY_MS         2000U
 #define APP_HEARTBEAT_PERIOD_MS   3000U
-#define APP_NODE_OFFLINE_MS       30000U
+#define APP_NODE_OFFLINE_MS       90000U
 #define APP_LOOP_STEP_MS          20U
 #define APP_STATUS_PERIOD_MS      1000U
 
@@ -189,8 +198,22 @@ static char s_uart_line[APP_UART_LINE_MAX];
 static uint8_t s_uart_line_len = 0U;
 static uint32_t s_uart_last_rx_ms = 0U;
 static bool s_join_req_next_direct = false;
+static volatile uint32_t s_system_ms = 0U;
 
 static void app_print_status(uint32_t now_ms);
+
+static void systick_init_1khz(void)
+{
+    /* 16 MHz core clock -> 1 ms tick */
+    SYSTICK_RVR = 16000UL - 1UL;
+    SYSTICK_CVR = 0UL;
+    SYSTICK_CSR = SYSTICK_CSR_ENABLE | SYSTICK_CSR_TICKINT | SYSTICK_CSR_CLKSRC;
+}
+
+void SysTick_Handler(void)
+{
+    s_system_ms++;
+}
 
 static void delay_cycles(volatile uint32_t cycles)
 {
@@ -1588,10 +1611,12 @@ void Error_Handler(void)
 int main(void)
 {
     uint32_t i;
-    uint32_t now_ms = 0U;
+    uint32_t now_ms;
+    uint32_t last_periodic_ms = 0xFFFFFFFFUL;
     bool radio_ok;
 
     system_clock_init_hsi_16mhz();
+    systick_init_1khz();
 
     RCC->AHBENR |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN;
     gpio_set_output(GPIOA, 0U);
@@ -1608,7 +1633,7 @@ int main(void)
     app_init_identity();
 
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: JOIN_TX_ACKBURST_V4\r\n");
+    uart1_write_str("BUILD: JOIN_TX_ACKBURST_V5\r\n");
     uart1_write_str("MODE: LoRa text + ID join + ACK retransmission\r\n");
     uart1_write_str("cfg coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "1" : "0");
@@ -1664,16 +1689,17 @@ int main(void)
     uart1_write_str("> ");
 
     while (1) {
+        now_ms = s_system_ms;
         platform_port_set_time_ms(now_ms);
         platform_radio_process();
 
         if (radio_ok) {
             app_poll_uart(now_ms);
-            app_periodic(now_ms);
+            if (now_ms != last_periodic_ms) {
+                app_periodic(now_ms);
+                last_periodic_ms = now_ms;
+            }
         }
-
-        now_ms += APP_LOOP_STEP_MS;
-        delay_ms(APP_LOOP_STEP_MS);
     }
 }
 
