@@ -21,11 +21,18 @@
 #define TCXO_PWR_PIN        GPIO_PIN_0
 
 /*
- * Wyres v2 antenna switch behavior from mynewt-wbasev2-bsp:
- * revB: TX=(1,0), RX=(0,1)
- * revC/revD+: TX=(0,1), RX=(1,1)
+ * RF switch profiles:
+ * - LoRa-E5 devkit profile: RX=(1,0), TX=(0,1)
+ * - Wyres v2 revC/revD profile: RX=(1,1), TX=(0,1)
  */
-#define WYRES_HW_REV_GE_2   1
+#define RBI_RF_SW_PROFILE_LORAE5       1
+#define RBI_RF_SW_PROFILE_WYRES_REVC   2
+
+/*
+ * Loraprojet targets LoRa-E5 devkit.
+ * Keep this fixed to avoid accidentally flashing a Wyres RF profile.
+ */
+#define RBI_RF_SW_PROFILE RBI_RF_SW_PROFILE_LORAE5
 
 typedef enum
 {

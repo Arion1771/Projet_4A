@@ -41,18 +41,20 @@ int32_t RBI_ConfigRFSwitch(RBI_Switch_TypeDef Config)
   switch (Config)
   {
     case RBI_SWITCH_RX:
-#if WYRES_HW_REV_GE_2
+#if (RBI_RF_SW_PROFILE == RBI_RF_SW_PROFILE_WYRES_REVC)
       RBI_SetRfSwitch(1, 1);
 #else
-      RBI_SetRfSwitch(0, 1);
+      /* LoRa-E5 devkit profile */
+      RBI_SetRfSwitch(1, 0);
 #endif
       break;
     case RBI_SWITCH_RFO_LP:
     case RBI_SWITCH_RFO_HP:
-#if WYRES_HW_REV_GE_2
+#if (RBI_RF_SW_PROFILE == RBI_RF_SW_PROFILE_WYRES_REVC)
       RBI_SetRfSwitch(0, 1);
 #else
-      RBI_SetRfSwitch(1, 0);
+      /* LoRa-E5 devkit profile */
+      RBI_SetRfSwitch(0, 1);
 #endif
       break;
     case RBI_SWITCH_OFF:

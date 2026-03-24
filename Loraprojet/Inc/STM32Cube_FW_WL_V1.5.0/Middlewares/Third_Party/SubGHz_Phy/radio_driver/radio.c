@@ -1871,6 +1871,9 @@ static void RadioIrqProcess( void )
     default:
         break;
     }
+
+    /* Clear latched IRQ state to keep Radio.IrqProcess() idempotent if called from main loop. */
+    SubgRf.RadioIrq = IRQ_RADIO_NONE;
 }
 
 static void RadioTxPrbs( void )
