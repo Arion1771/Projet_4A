@@ -251,6 +251,7 @@ static void App_ScheduleAckBurst(uint16_t dst_id, uint16_t seq, uint32_t now_ms)
 static void App_ProcessAckBurst(uint32_t now_ms);
 
 static void App_HandleJoinReq(const app_frame_t *frame);
+static void App_HandleHeartbeat(const app_frame_t *frame);
 static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr);
 static void App_HandleFrame(const app_frame_t *frame, int16_t rssi, int8_t snr);
 static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr);
@@ -1255,6 +1256,35 @@ static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr)
     }
 }
 
+static void App_HandleHeartbeat(const app_frame_t *frame)
+{
+    app_frame_t ack;
+    uint32_t now_ms;
+
+    if (frame == NULL)
+    {
+        return;
+    }
+
+    if ((frame->dst_id != APP_COORDINATOR_ID) && (frame->dst_id != APP_BROADCAST_ID))
+    {
+        return;
+    }
+
+    if (frame->src_id == APP_NODE_UNASSIGNED)
+    {
+        return;
+    }
+
+    now_ms = HAL_GetTick();
+    App_InitFrame(&ack, APP_MSG_ACK, APP_COORDINATOR_ID, frame->src_id, frame->seq);
+    if (App_QueueFrame(&ack))
+    {
+        stat_ack_tx++;
+    }
+    App_ScheduleAckBurst(frame->src_id, frame->seq, now_ms);
+}
+
 static void App_HandleFrame(const app_frame_t *frame, int16_t rssi, int8_t snr)
 {
     if (frame == NULL)
@@ -1277,7 +1307,7 @@ static void App_HandleFrame(const app_frame_t *frame, int16_t rssi, int8_t snr)
         break;
 
     case APP_MSG_HEARTBEAT:
-        /* Presence is tracked from src_id in App_HandleRxRaw. */
+        App_HandleHeartbeat(frame);
         break;
 
     default:

@@ -125,6 +125,9 @@ typedef struct {
 #define APP_JOIN_RETRY_MS         2000U
 #define APP_HEARTBEAT_PERIOD_MS   3000U
 #define APP_NODE_OFFLINE_MS       30000U
+#define APP_LINK_LOST_MS          12000U
+#define APP_LED_BLINK_FAST_MS     120U
+#define APP_LED_BLINK_SLOW_MS     1000U
 #define APP_LOOP_STEP_MS          20U
 #define APP_STATUS_PERIOD_MS      1000U
 
@@ -193,6 +196,12 @@ static uint16_t s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
 static uint32_t s_last_join_req_ms = 0U;
 static uint32_t s_last_heartbeat_ms = 0U;
 static bool s_joined = false;
+static uint8_t s_link_quality = 0U;
+static bool s_link_has_sample = false;
+static uint32_t s_link_last_coord_rx_ms = 0U;
+static bool s_link_lost_reported = false;
+static uint32_t s_led_link_next_toggle_ms = 0U;
+static uint8_t s_led_link_on = 0U;
 
 static app_pending_tx_t s_pending_tx;
 static app_ack_burst_t s_pending_ack_burst;
@@ -1150,6 +1159,90 @@ static void app_send_heartbeat(uint32_t now_ms)
     }
 }
 
+static uint8_t app_score_from_rssi(int16_t rssi)
+{
+    if (rssi <= -120) {
+        return 0U;
+    }
+    if (rssi >= -85) {
+        return 100U;
+    }
+    return (uint8_t)(((int32_t)(rssi + 120) * 100) / 35);
+}
+
+static uint8_t app_score_from_snr(int8_t snr)
+{
+    if (snr <= -20) {
+        return 0U;
+    }
+    if (snr >= 10) {
+        return 100U;
+    }
+    return (uint8_t)(((int32_t)(snr + 20) * 100) / 30);
+}
+
+static void app_link_note_coordinator_rx(int16_t rssi, int8_t snr, uint32_t now_ms)
+{
+    uint8_t rssi_score;
+    uint8_t snr_score;
+    uint8_t sample;
+
+    rssi_score = app_score_from_rssi(rssi);
+    snr_score = app_score_from_snr(snr);
+    sample = (uint8_t)(((uint16_t)rssi_score * 7U + (uint16_t)snr_score * 3U) / 10U);
+
+    if (!s_link_has_sample) {
+        s_link_quality = sample;
+        s_link_has_sample = true;
+    } else {
+        s_link_quality = (uint8_t)(((uint16_t)s_link_quality * 7U + (uint16_t)sample * 3U) / 10U);
+    }
+
+    s_link_last_coord_rx_ms = now_ms;
+    if (s_link_lost_reported) {
+        s_link_lost_reported = false;
+        s_led_link_next_toggle_ms = 0U;
+        uart1_write_str("INFO: coordinator link restored\r\n");
+    }
+}
+
+static void app_update_link_led(uint32_t now_ms)
+{
+    uint32_t blink_period_ms;
+
+    if ((APP_COORDINATOR_MODE != 0U) || !s_joined || (s_node_id == APP_NODE_ID_UNASSIGNED)) {
+        return;
+    }
+
+    if (!s_link_has_sample) {
+        s_led_link_on = 1U;
+        led_write(1U);
+        s_led_link_next_toggle_ms = 0U;
+        return;
+    }
+
+    if ((now_ms - s_link_last_coord_rx_ms) >= APP_LINK_LOST_MS) {
+        if (!s_link_lost_reported) {
+            s_link_lost_reported = true;
+            uart1_write_str("WARN: coordinator link lost, LED off\r\n");
+        }
+        s_led_link_on = 0U;
+        led_write(0U);
+        s_led_link_next_toggle_ms = 0U;
+        return;
+    }
+
+    blink_period_ms = APP_LED_BLINK_FAST_MS +
+                      (((uint32_t)s_link_quality * (APP_LED_BLINK_SLOW_MS - APP_LED_BLINK_FAST_MS)) / 100U);
+
+    if ((s_led_link_next_toggle_ms == 0U) ||
+        ((int32_t)(now_ms - s_led_link_next_toggle_ms) >= 0)) {
+        s_led_link_on = (uint8_t)(s_led_link_on == 0U ? 1U : 0U);
+        led_write(s_led_link_on);
+        s_led_link_next_toggle_ms = now_ms + blink_period_ms;
+    }
+}
+
 static bool app_send_text(uint16_t dst_id, const uint8_t *payload, uint8_t payload_len, uint32_t now_ms, uint16_t *out_seq)
 {
     wyresv2_frame_t msg;
@@ -1539,6 +1632,10 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
     app_relay_frame(&frame, from);
 
     now_ms = platform_millis();
+    if ((APP_COORDINATOR_MODE == 0U) && (frame.src_id == APP_COORDINATOR_ID)) {
+        app_link_note_coordinator_rx(rssi, snr, now_ms);
+    }
+
     if ((APP_COORDINATOR_MODE != 0U) &&
         (frame.src_id != APP_NODE_ID_UNASSIGNED) &&
         (frame.src_id != APP_BROADCAST_ID) &&
@@ -1572,7 +1669,11 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
         break;
 
     case MSG_HEARTBEAT:
-        /* Presence is handled above via src_id tracking. */
+        if ((APP_COORDINATOR_MODE != 0U) &&
+            ((frame.dst_id == s_node_id) || (frame.dst_id == APP_BROADCAST_ID)) &&
+            (frame.src_id != APP_NODE_ID_UNASSIGNED)) {
+            app_send_ack(frame.src_id, frame.seq);
+        }
         break;
 
     default:
@@ -1592,6 +1693,7 @@ static void app_periodic(uint32_t now_ms)
     app_check_node_disconnects(now_ms);
     app_pending_process(now_ms);
     app_process_ack_burst(now_ms);
+    app_update_link_led(now_ms);
 }
 
 static void app_print_status(uint32_t now_ms)
@@ -1639,6 +1741,15 @@ static void app_print_status(uint32_t now_ms)
     uart1_write_hex8(opm);
     uart1_write_str(" TV=");
     uart1_write_u32((uint32_t)platform_radio_dbg_tx_variant());
+    uart1_write_str(" LQ=");
+    uart1_write_u32((uint32_t)s_link_quality);
+    uart1_write_str(" LAge=");
+    if (s_link_has_sample) {
+        uart1_write_u32((uint32_t)(now_ms - s_link_last_coord_rx_ms));
+    } else {
+        uart1_write_u32(0U);
+    }
+    uart1_write_str("ms");
     uart1_write_str(" BAT=");
     uart1_write_u32(platform_battery_mv());
     uart1_write_str("mV\r\n");
@@ -1659,6 +1770,12 @@ static void app_init_identity(void)
     s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
     s_relay_track_insert_idx = 0U;
     s_join_req_next_direct = false;
+    s_link_quality = 0U;
+    s_link_has_sample = false;
+    s_link_last_coord_rx_ms = 0U;
+    s_link_lost_reported = false;
+    s_led_link_next_toggle_ms = 0U;
+    s_led_link_on = 0U;
 
     if (APP_FIXED_NODE_ID != 0U) {
         s_node_id = APP_FIXED_NODE_ID;
@@ -1712,7 +1829,7 @@ int main(void)
     app_init_identity();
 
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: JOIN_UART_IRQ_V6\r\n");
+    uart1_write_str("BUILD: RANGE_LED_WARN_V1\r\n");
     uart1_write_str("MODE: LoRa text + ID join + ACK retransmission\r\n");
     uart1_write_str("cfg coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "1" : "0");
