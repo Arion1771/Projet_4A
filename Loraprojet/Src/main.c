@@ -39,7 +39,7 @@
 #define APP_JOIN_ACK_REPEAT    3U
 #define APP_JOIN_ACK_DELAY_MS  120U
 #define APP_JOIN_ACK_GAP_MS    120U
-#define APP_NODE_OFFLINE_MS    90000U
+#define APP_NODE_OFFLINE_MS    30000U
 #define APP_ACK_TIMEOUT_MS     700U
 #define APP_ACK_MAX_RETRIES    3U
 #define APP_ACK_BURST_REPEAT   2U
@@ -729,6 +729,7 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
     uint8_t i;
     uint8_t found = 0U;
     uint8_t was_online = 0U;
+    uint8_t stale_seen_while_online = 0U;
 
     if ((node_id == APP_NODE_UNASSIGNED) ||
         (node_id == APP_BROADCAST_ID) ||
@@ -745,13 +746,28 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
             if (join_table[i].online != 0U)
             {
                 was_online = 1U;
+                if ((now_ms >= join_table[i].last_seen_ms) &&
+                    ((now_ms - join_table[i].last_seen_ms) >= APP_NODE_OFFLINE_MS))
+                {
+                    stale_seen_while_online = 1U;
+                }
             }
             join_table[i].last_seen_ms = now_ms;
             join_table[i].online = 1U;
         }
     }
 
-    if ((found != 0U) && (was_online == 0U))
+    /*
+     * Safety net:
+     * if a long silence is observed while node was still marked online,
+     * emit the disconnect event before the reconnect event.
+     */
+    if ((found != 0U) && (stale_seen_while_online != 0U))
+    {
+        Uart_LogTimedf("WARN: node %u disconnected\r\n", (unsigned)node_id);
+    }
+
+    if ((found != 0U) && ((was_online == 0U) || (stale_seen_while_online != 0U)))
     {
         Uart_LogTimedf("INFO: node %u reconnected\r\n", (unsigned)node_id);
     }
@@ -1272,6 +1288,7 @@ static void App_HandleFrame(const app_frame_t *frame, int16_t rssi, int8_t snr)
 static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr)
 {
     app_frame_t frame;
+    uint32_t now_ms;
 
     stat_rx_total++;
 
@@ -1287,7 +1304,13 @@ static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int
         return;
     }
 
-    App_MarkNodeSeen(frame.src_id, HAL_GetTick());
+    now_ms = HAL_GetTick();
+    /*
+     * Evaluate offline timeouts before marking the current frame source as seen.
+     * This guarantees proper disconnect/reconnect ordering even on edge timings.
+     */
+    App_CheckNodeDisconnects(now_ms);
+    App_MarkNodeSeen(frame.src_id, now_ms);
     App_RelayFrame(&frame);
     App_HandleFrame(&frame, rssi, snr);
 }

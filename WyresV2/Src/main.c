@@ -124,7 +124,7 @@ typedef struct {
 #define APP_RETRY_BACKOFF_MS      120U
 #define APP_JOIN_RETRY_MS         2000U
 #define APP_HEARTBEAT_PERIOD_MS   3000U
-#define APP_NODE_OFFLINE_MS       90000U
+#define APP_NODE_OFFLINE_MS       30000U
 #define APP_LOOP_STEP_MS          20U
 #define APP_STATUS_PERIOD_MS      1000U
 
@@ -774,6 +774,9 @@ static uint16_t app_join_find_or_assign(uint16_t nonce)
 static void app_mark_node_seen(uint16_t node_id, uint32_t now_ms)
 {
     uint8_t i;
+    bool found = false;
+    bool was_online = false;
+    bool stale_seen_while_online = false;
 
     if (APP_COORDINATOR_MODE == 0U) {
         return;
@@ -787,15 +790,29 @@ static void app_mark_node_seen(uint16_t node_id, uint32_t now_ms)
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++) {
         if (s_join_table[i].used && (s_join_table[i].node_id == node_id)) {
-            if (!s_join_table[i].online) {
-                uart1_write_str("INFO: node ");
-                uart1_write_u32((uint32_t)node_id);
-                uart1_write_str(" reconnected\r\n");
+            found = true;
+            if (s_join_table[i].online) {
+                was_online = true;
+                if ((now_ms >= s_join_table[i].last_seen_ms) &&
+                    ((now_ms - s_join_table[i].last_seen_ms) >= APP_NODE_OFFLINE_MS)) {
+                    stale_seen_while_online = true;
+                }
             }
             s_join_table[i].last_seen_ms = now_ms;
             s_join_table[i].online = true;
-            return;
         }
+    }
+
+    if (found && stale_seen_while_online) {
+        uart1_write_str("WARN: node ");
+        uart1_write_u32((uint32_t)node_id);
+        uart1_write_str(" disconnected\r\n");
+    }
+
+    if (found && (!was_online || stale_seen_while_online)) {
+        uart1_write_str("INFO: node ");
+        uart1_write_u32((uint32_t)node_id);
+        uart1_write_str(" reconnected\r\n");
     }
 }
 
@@ -1500,6 +1517,7 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
 {
     wyresv2_frame_t frame;
     bool parsed;
+    uint32_t now_ms;
 
     (void)from;
     s_rx_count++;
@@ -1520,11 +1538,13 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
      */
     app_relay_frame(&frame, from);
 
+    now_ms = platform_millis();
     if ((APP_COORDINATOR_MODE != 0U) &&
         (frame.src_id != APP_NODE_ID_UNASSIGNED) &&
         (frame.src_id != APP_BROADCAST_ID) &&
         (frame.src_id != APP_COORDINATOR_ID)) {
-        app_mark_node_seen(frame.src_id, platform_millis());
+        app_check_node_disconnects(now_ms);
+        app_mark_node_seen(frame.src_id, now_ms);
     }
 
     switch (frame.type) {
