@@ -1633,34 +1633,30 @@ static void app_relay_frame(const wyresv2_frame_t *frame, link_direction_t from)
     }
     if (app_send_raw_dir(out_dir, raw, raw_len)) {
         app_relay_remember(frame->src_id, frame->seq);
-        if ((frame->type == MSG_JOIN_REQ) || (frame->type == MSG_JOIN_ACK)) {
-            uart1_write_str("RELAY ");
-            uart1_write_str((frame->type == MSG_JOIN_REQ) ? "JOIN_REQ" : "JOIN_ACK");
-            uart1_write_str(" src=");
-            uart1_write_u32((uint32_t)frame->src_id);
-            uart1_write_str(" dst=");
-            uart1_write_u32((uint32_t)frame->dst_id);
-            uart1_write_str(" ttl=");
-            uart1_write_u32((uint32_t)relay.ttl);
-            uart1_write_str("\r\n");
-        }
+        uart1_write_str("RELAY PASS src=");
+        uart1_write_u32((uint32_t)frame->src_id);
+        uart1_write_str(" dst=");
+        uart1_write_u32((uint32_t)frame->dst_id);
+        uart1_write_str(" type=");
+        uart1_write_u32((uint32_t)frame->type);
+        uart1_write_str(" ttl=");
+        uart1_write_u32((uint32_t)relay.ttl);
+        uart1_write_str("\r\n");
         return;
     }
 
     /* Single-radio fallback (dir may be ignored by backend anyway). */
     if (app_send_raw(raw, raw_len)) {
         app_relay_remember(frame->src_id, frame->seq);
-        if ((frame->type == MSG_JOIN_REQ) || (frame->type == MSG_JOIN_ACK)) {
-            uart1_write_str("RELAY ");
-            uart1_write_str((frame->type == MSG_JOIN_REQ) ? "JOIN_REQ" : "JOIN_ACK");
-            uart1_write_str(" src=");
-            uart1_write_u32((uint32_t)frame->src_id);
-            uart1_write_str(" dst=");
-            uart1_write_u32((uint32_t)frame->dst_id);
-            uart1_write_str(" ttl=");
-            uart1_write_u32((uint32_t)relay.ttl);
-            uart1_write_str(" (fallback)\r\n");
-        }
+        uart1_write_str("RELAY PASS src=");
+        uart1_write_u32((uint32_t)frame->src_id);
+        uart1_write_str(" dst=");
+        uart1_write_u32((uint32_t)frame->dst_id);
+        uart1_write_str(" type=");
+        uart1_write_u32((uint32_t)frame->type);
+        uart1_write_str(" ttl=");
+        uart1_write_u32((uint32_t)relay.ttl);
+        uart1_write_str(" mode=fallback\r\n");
     }
 }
 
