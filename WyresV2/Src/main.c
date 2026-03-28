@@ -36,6 +36,12 @@
 #define STM32_UID_BASE       STM32L1_UID_BASE
 #endif
 
+#if (STM32_UID_BASE == STM32L1_UID_BASE)
+#define STM32_UID_BASE_ALT   STM32WL_UID_BASE
+#else
+#define STM32_UID_BASE_ALT   STM32L1_UID_BASE
+#endif
+
 typedef struct {
     volatile uint32_t MODER;
     volatile uint32_t OTYPER;
@@ -538,15 +544,53 @@ static bool parse_u16_token(char **cursor, uint16_t *out_value)
 
 static void app_read_uid_words(uint32_t out_uid[3])
 {
-    const volatile uint32_t *uid = (const volatile uint32_t *)STM32_UID_BASE;
+    const volatile uint32_t *uid_primary = (const volatile uint32_t *)STM32_UID_BASE;
+    const volatile uint32_t *uid_alt = (const volatile uint32_t *)STM32_UID_BASE_ALT;
+    uint32_t primary[3];
+    uint32_t alt[3];
+    bool primary_all_zero;
+    bool primary_all_ff;
+    bool alt_all_zero;
+    bool alt_all_ff;
 
     if (out_uid == NULL) {
         return;
     }
 
-    out_uid[0] = uid[0];
-    out_uid[1] = uid[1];
-    out_uid[2] = uid[2];
+    primary[0] = uid_primary[0];
+    primary[1] = uid_primary[1];
+    primary[2] = uid_primary[2];
+    primary_all_zero = (primary[0] == 0U) && (primary[1] == 0U) && (primary[2] == 0U);
+    primary_all_ff = (primary[0] == 0xFFFFFFFFUL) &&
+                     (primary[1] == 0xFFFFFFFFUL) &&
+                     (primary[2] == 0xFFFFFFFFUL);
+
+    if (!primary_all_zero && !primary_all_ff) {
+        out_uid[0] = primary[0];
+        out_uid[1] = primary[1];
+        out_uid[2] = primary[2];
+        return;
+    }
+
+    alt[0] = uid_alt[0];
+    alt[1] = uid_alt[1];
+    alt[2] = uid_alt[2];
+    alt_all_zero = (alt[0] == 0U) && (alt[1] == 0U) && (alt[2] == 0U);
+    alt_all_ff = (alt[0] == 0xFFFFFFFFUL) &&
+                 (alt[1] == 0xFFFFFFFFUL) &&
+                 (alt[2] == 0xFFFFFFFFUL);
+
+    if (!alt_all_zero && !alt_all_ff) {
+        out_uid[0] = alt[0];
+        out_uid[1] = alt[1];
+        out_uid[2] = alt[2];
+        return;
+    }
+
+    /* Last resort: keep primary sample even if it looks invalid. */
+    out_uid[0] = primary[0];
+    out_uid[1] = primary[1];
+    out_uid[2] = primary[2];
 }
 
 static void app_read_uid_bytes(uint8_t out_uid[APP_JOIN_UID_LEN])
@@ -1227,11 +1271,6 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
     } else {
         parent_id = APP_COORDINATOR_ID;
     }
-    if (frame->payload_len >= APP_JOIN_ACK_PAYLOAD_LEN) {
-        memcpy(ack_uid, &frame->payload[APP_JOIN_ACK_BASE_LEN], APP_JOIN_UID_LEN);
-        ack_uid_valid = app_uid_is_valid(ack_uid);
-    }
-
     if (nonce != s_join_nonce) {
         uart1_write_str("JOIN_ACK ignored nonce=");
         uart1_write_u32((uint32_t)nonce);
@@ -1241,7 +1280,17 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
         return;
     }
 
-    if (ack_uid_valid && !app_uid_equal(ack_uid, s_join_uid)) {
+    if (frame->payload_len < APP_JOIN_ACK_PAYLOAD_LEN) {
+        uart1_write_str("JOIN_ACK ignored missing uid\r\n");
+        return;
+    }
+    memcpy(ack_uid, &frame->payload[APP_JOIN_ACK_BASE_LEN], APP_JOIN_UID_LEN);
+    ack_uid_valid = app_uid_is_valid(ack_uid);
+    if (!ack_uid_valid) {
+        uart1_write_str("JOIN_ACK ignored invalid uid\r\n");
+        return;
+    }
+    if (!app_uid_equal(ack_uid, s_join_uid)) {
         uart1_write_str("JOIN_ACK ignored uid mismatch\r\n");
         return;
     }
@@ -1281,16 +1330,17 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     bool is_new_join;
     uint32_t now_ms;
 
-    if ((frame == NULL) || (APP_COORDINATOR_MODE == 0U) || (frame->payload_len < 2U)) {
+    if ((frame == NULL) || (APP_COORDINATOR_MODE == 0U) ||
+        (frame->payload_len < APP_JOIN_REQ_PAYLOAD_LEN)) {
         return;
     }
 
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
-    memset(join_uid, 0, sizeof(join_uid));
-    join_uid_valid = false;
-    if (frame->payload_len >= APP_JOIN_REQ_PAYLOAD_LEN) {
-        memcpy(join_uid, &frame->payload[2], APP_JOIN_UID_LEN);
-        join_uid_valid = app_uid_is_valid(join_uid);
+    memcpy(join_uid, &frame->payload[2], APP_JOIN_UID_LEN);
+    join_uid_valid = app_uid_is_valid(join_uid);
+    if (!join_uid_valid) {
+        uart1_write_str("JOIN_REQ ignored invalid uid\r\n");
+        return;
     }
 
     assigned_id = app_join_find_or_assign(nonce, join_uid, join_uid_valid, &parent_id, &is_new_join);

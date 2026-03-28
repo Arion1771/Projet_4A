@@ -36,6 +36,10 @@
 #define APP_JOIN_TABLE_SIZE    16U
 #define APP_JOIN_FIRST_ID      2U
 #define APP_JOIN_LAST_ID       250U
+#define APP_JOIN_UID_LEN       12U
+#define APP_JOIN_REQ_PAYLOAD_LEN  (2U + APP_JOIN_UID_LEN)
+#define APP_JOIN_ACK_BASE_LEN  6U
+#define APP_JOIN_ACK_PAYLOAD_LEN  (APP_JOIN_ACK_BASE_LEN + APP_JOIN_UID_LEN)
 #define APP_JOIN_ACK_REPEAT    3U
 #define APP_JOIN_ACK_DELAY_MS  120U
 #define APP_JOIN_ACK_GAP_MS    120U
@@ -80,6 +84,8 @@ typedef struct
 {
     uint8_t used;
     uint16_t nonce;
+    uint8_t uid_valid;
+    uint8_t uid[APP_JOIN_UID_LEN];
     uint16_t node_id;
     uint16_t parent_id;
     uint32_t last_seen_ms;
@@ -107,6 +113,8 @@ typedef struct
 {
     uint8_t active;
     uint16_t nonce;
+    uint8_t uid_valid;
+    uint8_t uid[APP_JOIN_UID_LEN];
     uint16_t assigned_id;
     uint16_t parent_id;
     uint8_t repeats_left;
@@ -214,6 +222,8 @@ static void Uart_IrqDrain(UART_HandleTypeDef *huart, app_uart_ring_t *ring);
 
 static char *SkipSpaces(char *p);
 static uint8_t ParseU16(char **cursor, uint16_t *out_value);
+static uint8_t App_UidIsValid(const uint8_t *uid);
+static uint8_t App_UidEqual(const uint8_t *a, const uint8_t *b);
 
 static uint8_t App_SerializeFrame(const app_frame_t *frame, uint8_t *out, uint8_t out_max);
 static uint8_t App_ParseFrame(app_frame_t *frame, const uint8_t *raw, uint16_t raw_len);
@@ -227,7 +237,11 @@ static uint8_t App_QueueFrame(const app_frame_t *frame);
 
 static uint8_t App_JoinIdInUse(uint16_t node_id);
 static uint16_t App_JoinAllocateId(void);
-static uint16_t App_JoinFindOrAssign(uint16_t nonce, uint16_t *out_parent_id, uint8_t *out_is_new);
+static uint16_t App_JoinFindOrAssign(uint16_t nonce,
+                                     const uint8_t *join_uid,
+                                     uint8_t join_uid_valid,
+                                     uint16_t *out_parent_id,
+                                     uint8_t *out_is_new);
 static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms);
 static void App_CheckNodeDisconnects(uint32_t now_ms);
 static void App_RelayFrame(const app_frame_t *frame);
@@ -237,7 +251,12 @@ static void App_PrintStatus(void);
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms);
 static void App_ProcessPendingAck(uint32_t now_ms);
 static void App_ProcessAckFrame(const app_frame_t *frame);
-static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint16_t parent_id, uint32_t now_ms);
+static void App_ScheduleJoinAck(uint16_t nonce,
+                                const uint8_t *join_uid,
+                                uint8_t join_uid_valid,
+                                uint16_t assigned_id,
+                                uint16_t parent_id,
+                                uint32_t now_ms);
 static void App_ProcessJoinAckBurst(uint32_t now_ms);
 static void App_ScheduleAckBurst(uint16_t dst_id, uint16_t seq, uint32_t now_ms);
 static void App_ProcessAckBurst(uint32_t now_ms);
@@ -421,6 +440,51 @@ static uint8_t ParseU16(char **cursor, uint16_t *out_value)
 
     *out_value = (uint16_t)value;
     *cursor = p;
+    return 1U;
+}
+
+static uint8_t App_UidIsValid(const uint8_t *uid)
+{
+    uint8_t i;
+    uint8_t all_zero = 1U;
+    uint8_t all_ff = 1U;
+
+    if (uid == NULL)
+    {
+        return 0U;
+    }
+
+    for (i = 0U; i < APP_JOIN_UID_LEN; i++)
+    {
+        if (uid[i] != 0x00U)
+        {
+            all_zero = 0U;
+        }
+        if (uid[i] != 0xFFU)
+        {
+            all_ff = 0U;
+        }
+    }
+
+    return (uint8_t)((all_zero == 0U) && (all_ff == 0U));
+}
+
+static uint8_t App_UidEqual(const uint8_t *a, const uint8_t *b)
+{
+    uint8_t i;
+
+    if ((a == NULL) || (b == NULL))
+    {
+        return 0U;
+    }
+
+    for (i = 0U; i < APP_JOIN_UID_LEN; i++)
+    {
+        if (a[i] != b[i])
+        {
+            return 0U;
+        }
+    }
     return 1U;
 }
 
@@ -674,7 +738,11 @@ static uint16_t App_JoinAllocateId(void)
     return APP_NODE_UNASSIGNED;
 }
 
-static uint16_t App_JoinFindOrAssign(uint16_t nonce, uint16_t *out_parent_id, uint8_t *out_is_new)
+static uint16_t App_JoinFindOrAssign(uint16_t nonce,
+                                     const uint8_t *join_uid,
+                                     uint8_t join_uid_valid,
+                                     uint16_t *out_parent_id,
+                                     uint8_t *out_is_new)
 {
     uint8_t i;
     int8_t free_idx = -1;
@@ -695,8 +763,32 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce, uint16_t *out_parent_id, ui
     {
         if (join_table[i].used)
         {
-            if (join_table[i].nonce == nonce)
+            uint8_t same_identity = 0U;
+
+            if (join_uid_valid != 0U)
             {
+                if ((join_table[i].uid_valid != 0U) &&
+                    App_UidEqual(join_table[i].uid, join_uid))
+                {
+                    same_identity = 1U;
+                }
+                else if ((join_table[i].uid_valid == 0U) &&
+                         (join_table[i].nonce == nonce))
+                {
+                    /* Upgrade legacy nonce-only slot once UID is known. */
+                    join_table[i].uid_valid = 1U;
+                    memcpy(join_table[i].uid, join_uid, APP_JOIN_UID_LEN);
+                    same_identity = 1U;
+                }
+            }
+            else if ((join_table[i].uid_valid == 0U) && (join_table[i].nonce == nonce))
+            {
+                same_identity = 1U;
+            }
+
+            if (same_identity != 0U)
+            {
+                join_table[i].nonce = nonce;
                 App_MarkNodeSeen(join_table[i].node_id, now_ms);
                 if (join_table[i].parent_id != APP_NODE_UNASSIGNED)
                 {
@@ -734,6 +826,15 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce, uint16_t *out_parent_id, ui
 
     join_table[(uint8_t)free_idx].used = 1U;
     join_table[(uint8_t)free_idx].nonce = nonce;
+    join_table[(uint8_t)free_idx].uid_valid = join_uid_valid;
+    if (join_uid_valid != 0U)
+    {
+        memcpy(join_table[(uint8_t)free_idx].uid, join_uid, APP_JOIN_UID_LEN);
+    }
+    else
+    {
+        memset(join_table[(uint8_t)free_idx].uid, 0, APP_JOIN_UID_LEN);
+    }
     join_table[(uint8_t)free_idx].node_id = id;
     join_table[(uint8_t)free_idx].parent_id = parent_id;
     join_table[(uint8_t)free_idx].last_seen_ms = now_ms;
@@ -806,6 +907,8 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
 
         join_table[idx].used = 1U;
         join_table[idx].nonce = 0U;
+        join_table[idx].uid_valid = 0U;
+        memset(join_table[idx].uid, 0, APP_JOIN_UID_LEN);
         join_table[idx].node_id = node_id;
         join_table[idx].parent_id = parent_id;
         join_table[idx].last_seen_ms = now_ms;
@@ -1095,10 +1198,24 @@ static void App_ProcessAckFrame(const app_frame_t *frame)
     }
 }
 
-static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint16_t parent_id, uint32_t now_ms)
+static void App_ScheduleJoinAck(uint16_t nonce,
+                                const uint8_t *join_uid,
+                                uint8_t join_uid_valid,
+                                uint16_t assigned_id,
+                                uint16_t parent_id,
+                                uint32_t now_ms)
 {
     pending_join_ack.active = 1U;
     pending_join_ack.nonce = nonce;
+    pending_join_ack.uid_valid = join_uid_valid;
+    if ((join_uid_valid != 0U) && (join_uid != NULL))
+    {
+        memcpy(pending_join_ack.uid, join_uid, APP_JOIN_UID_LEN);
+    }
+    else
+    {
+        memset(pending_join_ack.uid, 0, APP_JOIN_UID_LEN);
+    }
     pending_join_ack.assigned_id = assigned_id;
     pending_join_ack.parent_id = parent_id;
     pending_join_ack.repeats_left = APP_JOIN_ACK_REPEAT;
@@ -1120,13 +1237,18 @@ static void App_ProcessJoinAckBurst(uint32_t now_ms)
     }
 
     App_InitFrame(&reply, APP_MSG_JOIN_ACK, APP_COORDINATOR_ID, APP_BROADCAST_ID, next_seq++);
-    reply.payload_len = 6U;
+    reply.payload_len = APP_JOIN_ACK_BASE_LEN;
     reply.payload[0] = (uint8_t)(pending_join_ack.nonce & 0xFFU);
     reply.payload[1] = (uint8_t)((pending_join_ack.nonce >> 8) & 0xFFU);
     reply.payload[2] = (uint8_t)(pending_join_ack.assigned_id & 0xFFU);
     reply.payload[3] = (uint8_t)((pending_join_ack.assigned_id >> 8) & 0xFFU);
     reply.payload[4] = (uint8_t)(pending_join_ack.parent_id & 0xFFU);
     reply.payload[5] = (uint8_t)((pending_join_ack.parent_id >> 8) & 0xFFU);
+    if (pending_join_ack.uid_valid != 0U)
+    {
+        memcpy(&reply.payload[APP_JOIN_ACK_BASE_LEN], pending_join_ack.uid, APP_JOIN_UID_LEN);
+        reply.payload_len = APP_JOIN_ACK_PAYLOAD_LEN;
+    }
 
     if (!App_QueueFrame(&reply))
     {
@@ -1195,10 +1317,12 @@ static void App_HandleJoinReq(const app_frame_t *frame)
     uint16_t nonce;
     uint16_t assigned_id;
     uint16_t parent_id;
+    uint8_t join_uid[APP_JOIN_UID_LEN];
+    uint8_t join_uid_valid;
     uint8_t is_new_join;
     uint32_t now_ms;
 
-    if ((frame == NULL) || (frame->payload_len < 2U))
+    if ((frame == NULL) || (frame->payload_len < APP_JOIN_REQ_PAYLOAD_LEN))
     {
         return;
     }
@@ -1209,7 +1333,16 @@ static void App_HandleJoinReq(const app_frame_t *frame)
     }
 
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
-    assigned_id = App_JoinFindOrAssign(nonce, &parent_id, &is_new_join);
+    memcpy(join_uid, &frame->payload[2], APP_JOIN_UID_LEN);
+    join_uid_valid = App_UidIsValid(join_uid);
+    if (join_uid_valid == 0U)
+    {
+        Uart_LogTimedf("JOIN_REQ ignored invalid uid from src=%u\r\n",
+                       (unsigned)frame->src_id);
+        return;
+    }
+
+    assigned_id = App_JoinFindOrAssign(nonce, join_uid, join_uid_valid, &parent_id, &is_new_join);
     if (assigned_id == APP_NODE_UNASSIGNED)
     {
         return;
@@ -1221,7 +1354,7 @@ static void App_HandleJoinReq(const app_frame_t *frame)
                    (unsigned)nonce);
 
     now_ms = HAL_GetTick();
-    App_ScheduleJoinAck(nonce, assigned_id, parent_id, now_ms);
+    App_ScheduleJoinAck(nonce, join_uid, join_uid_valid, assigned_id, parent_id, now_ms);
     if (is_new_join != 0U)
     {
         default_dst_id = assigned_id;
