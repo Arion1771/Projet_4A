@@ -31,7 +31,7 @@
 #define APP_FRAME_OVERHEAD     11U
 #define APP_MAX_FRAME_LEN      (APP_FRAME_OVERHEAD + APP_MAX_PAYLOAD)
 #define APP_TX_QUEUE_SIZE      8U
-#define APP_UART_LINE_MAX      220U
+#define APP_UART_LINE_MAX      96U
 #define APP_RELAY_TRACK_SIZE   24U
 #define APP_JOIN_TABLE_SIZE    16U
 #define APP_JOIN_FIRST_ID      2U
@@ -43,7 +43,7 @@
 #define APP_JOIN_ACK_REPEAT    3U
 #define APP_JOIN_ACK_DELAY_MS  120U
 #define APP_JOIN_ACK_GAP_MS    120U
-#define APP_NODE_OFFLINE_MS    5000U
+#define APP_NODE_OFFLINE_MS    30000U
 #define APP_ACK_TIMEOUT_MS     700U
 #define APP_ACK_MAX_RETRIES    3U
 #define APP_ACK_BURST_REPEAT   2U
@@ -132,20 +132,6 @@ typedef struct
 
 typedef struct
 {
-    uint32_t node_offline_ms;
-    uint32_t ack_timeout_ms;
-    uint8_t ack_max_retries;
-    uint8_t ack_burst_repeat;
-    uint32_t ack_burst_delay_ms;
-    uint32_t ack_burst_gap_ms;
-    uint8_t join_ack_repeat;
-    uint32_t join_ack_delay_ms;
-    uint32_t join_ack_gap_ms;
-    uint32_t uart_autosubmit_ms;
-} app_runtime_cfg_t;
-
-typedef struct
-{
     volatile uint16_t head;
     volatile uint16_t tail;
     volatile uint32_t overflow_count;
@@ -181,7 +167,6 @@ static uint8_t tx_queue_count = 0U;
 static app_pending_ack_t pending_ack;
 static app_join_ack_burst_t pending_join_ack;
 static app_ack_burst_t pending_ack_burst;
-static app_runtime_cfg_t app_cfg;
 static app_join_entry_t join_table[APP_JOIN_TABLE_SIZE];
 static uint16_t next_assigned_id = APP_JOIN_FIRST_ID;
 static uint16_t chain_tail_id = APP_COORDINATOR_ID;
@@ -237,9 +222,6 @@ static void Uart_IrqDrain(UART_HandleTypeDef *huart, app_uart_ring_t *ring);
 
 static char *SkipSpaces(char *p);
 static uint8_t ParseU16(char **cursor, uint16_t *out_value);
-static void App_ConfigSetDefaults(void);
-static void App_PrintConfig(void);
-static uint8_t App_ApplyConfigJson(const char *json);
 static uint8_t App_UidIsValid(const uint8_t *uid);
 static uint8_t App_UidEqual(const uint8_t *a, const uint8_t *b);
 
@@ -306,7 +288,6 @@ int main(void)
     memset(&pending_join_ack, 0, sizeof(pending_join_ack));
     memset(&pending_ack_burst, 0, sizeof(pending_ack_burst));
     memset(join_table, 0, sizeof(join_table));
-    App_ConfigSetDefaults();
     chain_tail_id = APP_COORDINATOR_ID;
 
     Uart_Log("BOOT LORAPROJET\r\n");
@@ -328,8 +309,7 @@ int main(void)
 #endif
     Uart_Log("COORDINATOR NODE ID: 1\r\n");
     Uart_Logf("PRESENCE OFFLINE THRESHOLD: %lu ms\r\n",
-              (unsigned long)app_cfg.node_offline_ms);
-    App_PrintConfig();
+              (unsigned long)APP_NODE_OFFLINE_MS);
     Uart_Log("SERIAL: type text + Enter (or short pause) to send on LoRa\r\n");
     Uart_Log("SERIAL: commands available via help\r\n");
 
@@ -460,220 +440,6 @@ static uint8_t ParseU16(char **cursor, uint16_t *out_value)
 
     *out_value = (uint16_t)value;
     *cursor = p;
-    return 1U;
-}
-
-static const char *App_JsonFindKey(const char *json, const char *key)
-{
-    const char *p;
-    size_t key_len;
-
-    if ((json == NULL) || (key == NULL) || (*key == '\0'))
-    {
-        return NULL;
-    }
-
-    key_len = strlen(key);
-    p = json;
-    while ((p = strstr(p, key)) != NULL)
-    {
-        if ((p > json) && (p[-1] == '"') && (p[key_len] == '"'))
-        {
-            return p + key_len + 1U;
-        }
-        p += key_len;
-    }
-
-    return NULL;
-}
-
-static uint8_t App_JsonGetU32(const char *json, const char *key, uint8_t *out_found, uint32_t *out_value)
-{
-    const char *p;
-    uint32_t value = 0U;
-    uint8_t has_digit = 0U;
-
-    if ((out_found == NULL) || (out_value == NULL))
-    {
-        return 0U;
-    }
-
-    *out_found = 0U;
-    *out_value = 0U;
-
-    p = App_JsonFindKey(json, key);
-    if (p == NULL)
-    {
-        return 1U;
-    }
-    *out_found = 1U;
-
-    while ((*p != '\0') && (*p != ':'))
-    {
-        p++;
-    }
-    if (*p != ':')
-    {
-        return 0U;
-    }
-    p++;
-
-    while ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\n'))
-    {
-        p++;
-    }
-
-    while ((*p >= '0') && (*p <= '9'))
-    {
-        has_digit = 1U;
-        if (value > 429496729U)
-        {
-            return 0U;
-        }
-        value = (value * 10U) + (uint32_t)(*p - '0');
-        if (value < (uint32_t)(*p - '0'))
-        {
-            return 0U;
-        }
-        p++;
-    }
-
-    if (has_digit == 0U)
-    {
-        return 0U;
-    }
-
-    *out_value = value;
-    return 1U;
-}
-
-static uint8_t App_ConfigReadU32(const char *json,
-                                 const char *key,
-                                 uint32_t min_value,
-                                 uint32_t max_value,
-                                 uint32_t *out_value,
-                                 uint8_t *out_found)
-{
-    uint32_t value = 0U;
-
-    if ((out_value == NULL) || (out_found == NULL))
-    {
-        return 0U;
-    }
-
-    if (App_JsonGetU32(json, key, out_found, &value) == 0U)
-    {
-        Uart_Logf("CFG ERROR: invalid numeric value for key %s\r\n", key);
-        return 0U;
-    }
-
-    if (*out_found == 0U)
-    {
-        return 1U;
-    }
-
-    if ((value < min_value) || (value > max_value))
-    {
-        Uart_Logf("CFG ERROR: out of range for key %s (%lu..%lu)\r\n",
-                  key,
-                  (unsigned long)min_value,
-                  (unsigned long)max_value);
-        return 0U;
-    }
-
-    *out_value = value;
-    return 1U;
-}
-
-static void App_ConfigSetDefaults(void)
-{
-    app_cfg.node_offline_ms = APP_NODE_OFFLINE_MS;
-    app_cfg.ack_timeout_ms = APP_ACK_TIMEOUT_MS;
-    app_cfg.ack_max_retries = APP_ACK_MAX_RETRIES;
-    app_cfg.ack_burst_repeat = APP_ACK_BURST_REPEAT;
-    app_cfg.ack_burst_delay_ms = APP_ACK_BURST_DELAY_MS;
-    app_cfg.ack_burst_gap_ms = APP_ACK_BURST_GAP_MS;
-    app_cfg.join_ack_repeat = APP_JOIN_ACK_REPEAT;
-    app_cfg.join_ack_delay_ms = APP_JOIN_ACK_DELAY_MS;
-    app_cfg.join_ack_gap_ms = APP_JOIN_ACK_GAP_MS;
-    app_cfg.uart_autosubmit_ms = APP_UART_AUTOSUBMIT_MS;
-}
-
-static void App_PrintConfig(void)
-{
-    Uart_Logf("cfg {\"nodeOfflineMs\":%lu,\"ackTimeoutMs\":%lu,\"ackMaxRetries\":%u,"
-              "\"ackBurstRepeat\":%u,\"ackBurstDelayMs\":%lu,\"ackBurstGapMs\":%lu,"
-              "\"joinAckRepeat\":%u,\"joinAckDelayMs\":%lu,\"joinAckGapMs\":%lu,"
-              "\"uartAutosubmitMs\":%lu}\r\n",
-              (unsigned long)app_cfg.node_offline_ms,
-              (unsigned long)app_cfg.ack_timeout_ms,
-              (unsigned)app_cfg.ack_max_retries,
-              (unsigned)app_cfg.ack_burst_repeat,
-              (unsigned long)app_cfg.ack_burst_delay_ms,
-              (unsigned long)app_cfg.ack_burst_gap_ms,
-              (unsigned)app_cfg.join_ack_repeat,
-              (unsigned long)app_cfg.join_ack_delay_ms,
-              (unsigned long)app_cfg.join_ack_gap_ms,
-              (unsigned long)app_cfg.uart_autosubmit_ms);
-}
-
-static uint8_t App_ApplyConfigJson(const char *json)
-{
-    const char *p = json;
-    uint8_t found = 0U;
-    uint8_t changed = 0U;
-    uint32_t value = 0U;
-
-    if (p == NULL)
-    {
-        return 0U;
-    }
-
-    while ((*p == ' ') || (*p == '\t'))
-    {
-        p++;
-    }
-    if (*p != '{')
-    {
-        Uart_Log("CFG ERROR: expected JSON object starting with '{'\r\n");
-        return 0U;
-    }
-
-    if (App_ConfigReadU32(p, "nodeOfflineMs", 1000U, 300000U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.node_offline_ms = value; changed = 1U; }
-
-    if (App_ConfigReadU32(p, "ackTimeoutMs", 100U, 10000U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.ack_timeout_ms = value; changed = 1U; }
-
-    if (App_ConfigReadU32(p, "ackMaxRetries", 0U, 10U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.ack_max_retries = (uint8_t)value; changed = 1U; }
-
-    if (App_ConfigReadU32(p, "ackBurstRepeat", 1U, 10U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.ack_burst_repeat = (uint8_t)value; changed = 1U; }
-
-    if (App_ConfigReadU32(p, "ackBurstDelayMs", 0U, 5000U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.ack_burst_delay_ms = value; changed = 1U; }
-
-    if (App_ConfigReadU32(p, "ackBurstGapMs", 0U, 5000U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.ack_burst_gap_ms = value; changed = 1U; }
-
-    if (App_ConfigReadU32(p, "joinAckRepeat", 1U, 10U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.join_ack_repeat = (uint8_t)value; changed = 1U; }
-
-    if (App_ConfigReadU32(p, "joinAckDelayMs", 0U, 5000U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.join_ack_delay_ms = value; changed = 1U; }
-
-    if (App_ConfigReadU32(p, "joinAckGapMs", 0U, 5000U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.join_ack_gap_ms = value; changed = 1U; }
-
-    if (App_ConfigReadU32(p, "uartAutosubmitMs", 100U, 10000U, &value, &found) == 0U) return 0U;
-    if (found != 0U) { app_cfg.uart_autosubmit_ms = value; changed = 1U; }
-
-    if (changed == 0U)
-    {
-        Uart_Log("CFG: no supported keys found\r\n");
-        return 0U;
-    }
     return 1U;
 }
 
@@ -980,8 +746,6 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce,
 {
     uint8_t i;
     int8_t free_idx = -1;
-    int8_t unique_nonce_idx = -1;
-    uint8_t nonce_match_count = 0U;
     uint16_t id;
     uint16_t parent_id = APP_COORDINATOR_ID;
     uint32_t now_ms = HAL_GetTick();
@@ -1000,15 +764,6 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce,
         if (join_table[i].used)
         {
             uint8_t same_identity = 0U;
-
-            if ((nonce != 0U) && (join_table[i].nonce == nonce))
-            {
-                if (nonce_match_count == 0U)
-                {
-                    unique_nonce_idx = (int8_t)i;
-                }
-                nonce_match_count++;
-            }
 
             if (join_uid_valid != 0U)
             {
@@ -1050,36 +805,6 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce,
         {
             free_idx = (int8_t)i;
         }
-    }
-
-    /*
-     * Reconnect fallback:
-     * if UID changed unexpectedly but nonce uniquely maps to one slot,
-     * keep the same assigned ID instead of allocating a new one.
-     */
-    if ((join_uid_valid != 0U) &&
-        (nonce != 0U) &&
-        (nonce_match_count == 1U) &&
-        (unique_nonce_idx >= 0))
-    {
-        uint8_t idx = (uint8_t)unique_nonce_idx;
-
-        Uart_LogTimedf("WARN: JOIN nonce fallback -> id=%u nonce=%u\r\n",
-                       (unsigned)join_table[idx].node_id,
-                       (unsigned)nonce);
-        join_table[idx].nonce = nonce;
-        join_table[idx].uid_valid = 1U;
-        memcpy(join_table[idx].uid, join_uid, APP_JOIN_UID_LEN);
-        App_MarkNodeSeen(join_table[idx].node_id, now_ms);
-        if (join_table[idx].parent_id != APP_NODE_UNASSIGNED)
-        {
-            parent_id = join_table[idx].parent_id;
-        }
-        if (out_parent_id != NULL)
-        {
-            *out_parent_id = parent_id;
-        }
-        return join_table[idx].node_id;
     }
 
     if (free_idx < 0)
@@ -1150,7 +875,7 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
             {
                 was_online = 1U;
                 if ((now_ms >= join_table[i].last_seen_ms) &&
-                    ((now_ms - join_table[i].last_seen_ms) >= app_cfg.node_offline_ms))
+                    ((now_ms - join_table[i].last_seen_ms) >= APP_NODE_OFFLINE_MS))
                 {
                     stale_seen_while_online = 1U;
                 }
@@ -1168,19 +893,6 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
     {
         uint8_t idx = (uint8_t)free_idx;
         uint16_t parent_id = APP_COORDINATOR_ID;
-
-        /*
-         * Guard against "ghost" reservations:
-         * only auto-learn IDs that are already within the assigned range.
-         * Unknown future IDs must come through JOIN_REQ so they keep a stable
-         * UID->ID binding and do not consume a new sequential slot.
-         */
-        if ((node_id < APP_JOIN_FIRST_ID) ||
-            (node_id > APP_JOIN_LAST_ID) ||
-            (node_id >= next_assigned_id))
-        {
-            return;
-        }
 
         if (node_id > APP_COORDINATOR_ID)
         {
@@ -1202,6 +914,16 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
         join_table[idx].last_seen_ms = now_ms;
         join_table[idx].online = 1U;
 
+        if ((node_id >= APP_JOIN_FIRST_ID) &&
+            (node_id <= APP_JOIN_LAST_ID) &&
+            (node_id >= next_assigned_id))
+        {
+            next_assigned_id = (uint16_t)(node_id + 1U);
+            if (next_assigned_id > APP_JOIN_LAST_ID)
+            {
+                next_assigned_id = APP_JOIN_FIRST_ID;
+            }
+        }
         if ((chain_tail_id == APP_NODE_UNASSIGNED) || (node_id > chain_tail_id))
         {
             chain_tail_id = node_id;
@@ -1302,7 +1024,7 @@ static void App_CheckNodeDisconnects(uint32_t now_ms)
             latest_seen_ms = now_ms;
         }
 
-        if ((now_ms - latest_seen_ms) >= app_cfg.node_offline_ms)
+        if ((now_ms - latest_seen_ms) >= APP_NODE_OFFLINE_MS)
         {
             for (j = 0U; j < APP_JOIN_TABLE_SIZE; j++)
             {
@@ -1401,11 +1123,6 @@ static void App_PrintStatus(void)
     Uart_Logf("STATUS chainTail=%u defaultDst=%u\r\n",
               (unsigned)chain_tail_id,
               (unsigned)default_dst_id);
-    Uart_Logf("STATUS cfg offlineMs=%lu ackToMs=%lu ackRetry=%u joinAckRepeat=%u\r\n",
-              (unsigned long)app_cfg.node_offline_ms,
-              (unsigned long)app_cfg.ack_timeout_ms,
-              (unsigned)app_cfg.ack_max_retries,
-              (unsigned)app_cfg.join_ack_repeat);
 }
 
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms)
@@ -1418,9 +1135,9 @@ static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *ra
     pending_ack.active = 1U;
     pending_ack.dst_id = dst_id;
     pending_ack.seq = seq;
-    pending_ack.retries_left = app_cfg.ack_max_retries;
+    pending_ack.retries_left = APP_ACK_MAX_RETRIES;
     pending_ack.raw_len = raw_len;
-    pending_ack.deadline_ms = now_ms + app_cfg.ack_timeout_ms;
+    pending_ack.deadline_ms = now_ms + APP_ACK_TIMEOUT_MS;
     memcpy(pending_ack.raw, raw, raw_len);
 }
 
@@ -1449,7 +1166,7 @@ static void App_ProcessPendingAck(uint32_t now_ms)
     if (App_QueueRaw(pending_ack.raw, pending_ack.raw_len))
     {
         pending_ack.retries_left--;
-        pending_ack.deadline_ms = now_ms + app_cfg.ack_timeout_ms;
+        pending_ack.deadline_ms = now_ms + APP_ACK_TIMEOUT_MS;
         stat_retry++;
         Uart_Logf("RETRY seq=%u left=%u\r\n",
                   (unsigned)pending_ack.seq,
@@ -1488,12 +1205,6 @@ static void App_ScheduleJoinAck(uint16_t nonce,
                                 uint16_t parent_id,
                                 uint32_t now_ms)
 {
-    if (app_cfg.join_ack_repeat == 0U)
-    {
-        pending_join_ack.active = 0U;
-        return;
-    }
-
     pending_join_ack.active = 1U;
     pending_join_ack.nonce = nonce;
     pending_join_ack.uid_valid = join_uid_valid;
@@ -1507,8 +1218,8 @@ static void App_ScheduleJoinAck(uint16_t nonce,
     }
     pending_join_ack.assigned_id = assigned_id;
     pending_join_ack.parent_id = parent_id;
-    pending_join_ack.repeats_left = app_cfg.join_ack_repeat;
-    pending_join_ack.next_tx_ms = now_ms + app_cfg.join_ack_delay_ms;
+    pending_join_ack.repeats_left = APP_JOIN_ACK_REPEAT;
+    pending_join_ack.next_tx_ms = now_ms + APP_JOIN_ACK_DELAY_MS;
 }
 
 static void App_ProcessJoinAckBurst(uint32_t now_ms)
@@ -1553,23 +1264,17 @@ static void App_ProcessJoinAckBurst(uint32_t now_ms)
     }
     else
     {
-        pending_join_ack.next_tx_ms = now_ms + app_cfg.join_ack_gap_ms;
+        pending_join_ack.next_tx_ms = now_ms + APP_JOIN_ACK_GAP_MS;
     }
 }
 
 static void App_ScheduleAckBurst(uint16_t dst_id, uint16_t seq, uint32_t now_ms)
 {
-    if (app_cfg.ack_burst_repeat == 0U)
-    {
-        pending_ack_burst.active = 0U;
-        return;
-    }
-
     pending_ack_burst.active = 1U;
     pending_ack_burst.dst_id = dst_id;
     pending_ack_burst.seq = seq;
-    pending_ack_burst.repeats_left = app_cfg.ack_burst_repeat;
-    pending_ack_burst.next_tx_ms = now_ms + app_cfg.ack_burst_delay_ms;
+    pending_ack_burst.repeats_left = APP_ACK_BURST_REPEAT;
+    pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_DELAY_MS;
 }
 
 static void App_ProcessAckBurst(uint32_t now_ms)
@@ -1603,7 +1308,7 @@ static void App_ProcessAckBurst(uint32_t now_ms)
     }
     else
     {
-        pending_ack_burst.next_tx_ms = now_ms + app_cfg.ack_burst_gap_ms;
+        pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_GAP_MS;
     }
 }
 
@@ -1658,7 +1363,7 @@ static void App_HandleJoinReq(const app_frame_t *frame)
                    (unsigned)nonce,
                    (unsigned)assigned_id,
                    (unsigned)parent_id,
-                   (unsigned)app_cfg.join_ack_repeat);
+                   (unsigned)APP_JOIN_ACK_REPEAT);
 }
 
 static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr)
@@ -1791,22 +1496,13 @@ static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int
         return;
     }
 
-    if ((frame.type < APP_MSG_TEXT) || (frame.type > APP_MSG_HEARTBEAT))
-    {
-        stat_parse_err++;
-        return;
-    }
-
     now_ms = HAL_GetTick();
     /*
      * Evaluate offline timeouts before marking the current frame source as seen.
      * This guarantees proper disconnect/reconnect ordering even on edge timings.
      */
     App_CheckNodeDisconnects(now_ms);
-    if ((frame.src_id >= APP_JOIN_FIRST_ID) && (frame.src_id <= APP_JOIN_LAST_ID))
-    {
-        App_MarkNodeSeen(frame.src_id, now_ms);
-    }
+    App_MarkNodeSeen(frame.src_id, now_ms);
     App_RelayFrame(&frame);
     App_HandleFrame(&frame, rssi, snr);
 }
@@ -1885,9 +1581,6 @@ static void App_PrintHelp(void)
     Uart_Log("  id                  -> show coordinator id\r\n");
     Uart_Log("  nodes               -> list joined nodes\r\n");
     Uart_Log("  status              -> print radio/protocol counters\r\n");
-    Uart_Log("  cfg                 -> show runtime config (json)\r\n");
-    Uart_Log("  cfg reset           -> reset runtime config defaults\r\n");
-    Uart_Log("  cfg {json}          -> apply runtime config from json\r\n");
     Uart_Log("  dst <id>            -> set default destination\r\n");
     Uart_Log("  send <id> <text>    -> send reliable text (ACK/retry)\r\n");
     Uart_Log("  broadcast <text>    -> send broadcast text\r\n");
@@ -1936,39 +1629,6 @@ static void App_HandleUartLine(char *line, uint32_t now_ms)
     if (strcmp(cursor, "status") == 0)
     {
         App_PrintStatus();
-        return;
-    }
-
-    if ((strcmp(cursor, "cfg") == 0) || (strcmp(cursor, "config") == 0))
-    {
-        App_PrintConfig();
-        return;
-    }
-
-    if ((strncmp(cursor, "cfg ", 4U) == 0) || (strncmp(cursor, "config ", 7U) == 0))
-    {
-        uint8_t is_cfg_prefix = (uint8_t)(strncmp(cursor, "cfg ", 4U) == 0);
-        char *arg = is_cfg_prefix ? SkipSpaces(cursor + 4U) : SkipSpaces(cursor + 7U);
-
-        if (strcmp(arg, "show") == 0)
-        {
-            App_PrintConfig();
-            return;
-        }
-        if (strcmp(arg, "reset") == 0)
-        {
-            App_ConfigSetDefaults();
-            Uart_Log("CFG: defaults restored\r\n");
-            App_PrintConfig();
-            return;
-        }
-        if (App_ApplyConfigJson(arg) == 0U)
-        {
-            Uart_Log("Usage: cfg {\"nodeOfflineMs\":5000,\"ackTimeoutMs\":700}\r\n");
-            return;
-        }
-        Uart_Log("CFG: applied\r\n");
-        App_PrintConfig();
         return;
     }
 
@@ -2086,7 +1746,7 @@ static void App_PollUart(uint32_t now_ms)
     }
 
     if ((uart_line_len > 0U) &&
-        ((now_ms - uart_last_rx_char_ms) >= app_cfg.uart_autosubmit_ms))
+        ((now_ms - uart_last_rx_char_ms) >= APP_UART_AUTOSUBMIT_MS))
     {
         App_SubmitUartLine(now_ms);
     }
