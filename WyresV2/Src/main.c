@@ -993,6 +993,13 @@ static void app_mark_node_seen(uint16_t node_id, uint32_t now_ms)
         uart1_write_str("INFO: learned node ");
         uart1_write_u32((uint32_t)node_id);
         uart1_write_str(" from relayed traffic\r\n");
+        if (parent != APP_COORDINATOR_ID) {
+            /*
+             * Linear chain inference: if node N is seen through relay,
+             * predecessor N-1 is part of the connected path as well.
+             */
+            app_mark_node_seen(parent, now_ms);
+        }
         return;
     }
 

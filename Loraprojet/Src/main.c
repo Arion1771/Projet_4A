@@ -827,6 +827,14 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
         }
 
         Uart_LogTimedf("INFO: learned node %u from relayed traffic\r\n", (unsigned)node_id);
+        if (parent_id != APP_COORDINATOR_ID)
+        {
+            /*
+             * In linear chain mode, seeing node N relayed implies predecessor N-1
+             * is currently part of the active path. Ensure parent is visible too.
+             */
+            App_MarkNodeSeen(parent_id, now_ms);
+        }
         return;
     }
 
