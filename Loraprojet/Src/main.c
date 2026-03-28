@@ -756,6 +756,7 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
     uint8_t found = 0U;
     uint8_t was_online = 0U;
     uint8_t stale_seen_while_online = 0U;
+    int8_t free_idx = -1;
 
     if ((node_id == APP_NODE_UNASSIGNED) ||
         (node_id == APP_BROADCAST_ID) ||
@@ -781,6 +782,52 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
             join_table[i].last_seen_ms = now_ms;
             join_table[i].online = 1U;
         }
+        else if ((!join_table[i].used) && (free_idx < 0))
+        {
+            free_idx = (int8_t)i;
+        }
+    }
+
+    if ((found == 0U) && (free_idx >= 0))
+    {
+        uint8_t idx = (uint8_t)free_idx;
+        uint16_t parent_id = APP_COORDINATOR_ID;
+
+        if (node_id > APP_COORDINATOR_ID)
+        {
+            parent_id = (uint16_t)(node_id - 1U);
+        }
+        if ((parent_id == APP_NODE_UNASSIGNED) ||
+            (parent_id == APP_BROADCAST_ID) ||
+            (parent_id == node_id))
+        {
+            parent_id = APP_COORDINATOR_ID;
+        }
+
+        join_table[idx].used = 1U;
+        join_table[idx].nonce = 0U;
+        join_table[idx].node_id = node_id;
+        join_table[idx].parent_id = parent_id;
+        join_table[idx].last_seen_ms = now_ms;
+        join_table[idx].online = 1U;
+
+        if ((node_id >= APP_JOIN_FIRST_ID) &&
+            (node_id <= APP_JOIN_LAST_ID) &&
+            (node_id >= next_assigned_id))
+        {
+            next_assigned_id = (uint16_t)(node_id + 1U);
+            if (next_assigned_id > APP_JOIN_LAST_ID)
+            {
+                next_assigned_id = APP_JOIN_FIRST_ID;
+            }
+        }
+        if ((chain_tail_id == APP_NODE_UNASSIGNED) || (node_id > chain_tail_id))
+        {
+            chain_tail_id = node_id;
+        }
+
+        Uart_LogTimedf("INFO: learned node %u from relayed traffic\r\n", (unsigned)node_id);
+        return;
     }
 
     /*
@@ -1414,6 +1461,7 @@ static void App_HandleUartLine(char *line, uint32_t now_ms)
     cursor = SkipSpaces(line);
     if (*cursor == '\0')
     {
+        App_PrintHelp();
         return;
     }
 

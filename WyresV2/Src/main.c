@@ -26,6 +26,15 @@
 #define LED2_PIN             (1UL << 3)   /* PB3 */
 
 #define STM32L1_UID_BASE     0x1FF80050UL
+#define STM32WL_UID_BASE     0x1FFF7590UL
+
+#if defined(STM32L151xx) || defined(STM32L151xC) || defined(STM32L151CCUx)
+#define STM32_UID_BASE       STM32L1_UID_BASE
+#elif defined(STM32WL) || defined(STM32WLSINGLE) || defined(STM32WLE5xx) || defined(STM32WL55xx) || defined(STM32WL54xx)
+#define STM32_UID_BASE       STM32WL_UID_BASE
+#else
+#define STM32_UID_BASE       STM32L1_UID_BASE
+#endif
 
 typedef struct {
     volatile uint32_t MODER;
@@ -139,6 +148,10 @@ typedef struct {
 #define APP_JOIN_TABLE_SIZE       16U
 #define APP_JOIN_FIRST_ASSIGN_ID  2U
 #define APP_JOIN_LAST_ASSIGN_ID   250U
+#define APP_JOIN_UID_LEN          12U
+#define APP_JOIN_REQ_PAYLOAD_LEN  (2U + APP_JOIN_UID_LEN)
+#define APP_JOIN_ACK_BASE_LEN     6U
+#define APP_JOIN_ACK_PAYLOAD_LEN  (APP_JOIN_ACK_BASE_LEN + APP_JOIN_UID_LEN)
 
 typedef struct {
     bool active;
@@ -165,6 +178,8 @@ typedef struct {
 typedef struct {
     bool used;
     uint16_t nonce;
+    bool uid_valid;
+    uint8_t uid[APP_JOIN_UID_LEN];
     uint16_t node_id;
     uint16_t parent_id;
     uint32_t last_seen_ms;
@@ -193,6 +208,7 @@ static uint16_t s_node_id = APP_NODE_ID_UNASSIGNED;
 static uint16_t s_default_dst_id = APP_COORDINATOR_ID;
 static uint16_t s_next_seq = 1U;
 static uint16_t s_join_nonce = 0U;
+static uint8_t s_join_uid[APP_JOIN_UID_LEN];
 static uint16_t s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
 static uint16_t s_chain_tail_id = APP_COORDINATOR_ID;
 static uint16_t s_parent_id = APP_COORDINATOR_ID;
@@ -520,10 +536,82 @@ static bool parse_u16_token(char **cursor, uint16_t *out_value)
     return true;
 }
 
+static void app_read_uid_words(uint32_t out_uid[3])
+{
+    const volatile uint32_t *uid = (const volatile uint32_t *)STM32_UID_BASE;
+
+    if (out_uid == NULL) {
+        return;
+    }
+
+    out_uid[0] = uid[0];
+    out_uid[1] = uid[1];
+    out_uid[2] = uid[2];
+}
+
+static void app_read_uid_bytes(uint8_t out_uid[APP_JOIN_UID_LEN])
+{
+    uint32_t uid_words[3];
+    uint8_t i;
+
+    if (out_uid == NULL) {
+        return;
+    }
+
+    app_read_uid_words(uid_words);
+    for (i = 0U; i < 4U; i++) {
+        out_uid[i] = (uint8_t)((uid_words[0] >> (8U * i)) & 0xFFU);
+        out_uid[4U + i] = (uint8_t)((uid_words[1] >> (8U * i)) & 0xFFU);
+        out_uid[8U + i] = (uint8_t)((uid_words[2] >> (8U * i)) & 0xFFU);
+    }
+}
+
+static bool app_uid_is_valid(const uint8_t uid[APP_JOIN_UID_LEN])
+{
+    uint8_t i;
+    bool all_zero = true;
+    bool all_ff = true;
+
+    if (uid == NULL) {
+        return false;
+    }
+
+    for (i = 0U; i < APP_JOIN_UID_LEN; i++) {
+        if (uid[i] != 0x00U) {
+            all_zero = false;
+        }
+        if (uid[i] != 0xFFU) {
+            all_ff = false;
+        }
+    }
+
+    return (!all_zero && !all_ff);
+}
+
+static bool app_uid_equal(const uint8_t a[APP_JOIN_UID_LEN], const uint8_t b[APP_JOIN_UID_LEN])
+{
+    uint8_t i;
+
+    if ((a == NULL) || (b == NULL)) {
+        return false;
+    }
+
+    for (i = 0U; i < APP_JOIN_UID_LEN; i++) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static uint16_t app_read_uid_nonce(void)
 {
-    const volatile uint32_t *uid = (const volatile uint32_t *)STM32L1_UID_BASE;
-    uint32_t mix = uid[0] ^ uid[1] ^ uid[2];
+    uint32_t uid_words[3];
+    uint32_t mix;
+
+    app_read_uid_words(uid_words);
+    mix = uid_words[0] ^ uid_words[1] ^ uid_words[2];
     mix ^= (mix >> 16);
     if ((mix & 0xFFFFU) == 0U) {
         mix ^= 0x5A5A5A5AU;
@@ -749,7 +837,11 @@ static uint16_t app_join_allocate_id(void)
     return APP_NODE_ID_UNASSIGNED;
 }
 
-static uint16_t app_join_find_or_assign(uint16_t nonce, uint16_t *out_parent_id, bool *out_is_new)
+static uint16_t app_join_find_or_assign(uint16_t nonce,
+                                        const uint8_t join_uid[APP_JOIN_UID_LEN],
+                                        bool join_uid_valid,
+                                        uint16_t *out_parent_id,
+                                        bool *out_is_new)
 {
     uint8_t i;
     int8_t free_idx = -1;
@@ -765,7 +857,23 @@ static uint16_t app_join_find_or_assign(uint16_t nonce, uint16_t *out_parent_id,
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++) {
         if (s_join_table[i].used) {
-            if (s_join_table[i].nonce == nonce) {
+            bool same_identity = false;
+
+            if (join_uid_valid) {
+                if (s_join_table[i].uid_valid && app_uid_equal(s_join_table[i].uid, join_uid)) {
+                    same_identity = true;
+                } else if ((!s_join_table[i].uid_valid) && (s_join_table[i].nonce == nonce)) {
+                    /* Upgrade legacy nonce-only entry once UID becomes available. */
+                    s_join_table[i].uid_valid = true;
+                    memcpy(s_join_table[i].uid, join_uid, APP_JOIN_UID_LEN);
+                    same_identity = true;
+                }
+            } else if ((!s_join_table[i].uid_valid) && (s_join_table[i].nonce == nonce)) {
+                same_identity = true;
+            }
+
+            if (same_identity) {
+                s_join_table[i].nonce = nonce;
                 if (s_join_table[i].parent_id != APP_NODE_ID_UNASSIGNED) {
                     parent_id = s_join_table[i].parent_id;
                 }
@@ -795,6 +903,12 @@ static uint16_t app_join_find_or_assign(uint16_t nonce, uint16_t *out_parent_id,
 
     s_join_table[(uint8_t)free_idx].used = true;
     s_join_table[(uint8_t)free_idx].nonce = nonce;
+    s_join_table[(uint8_t)free_idx].uid_valid = join_uid_valid;
+    if (join_uid_valid) {
+        memcpy(s_join_table[(uint8_t)free_idx].uid, join_uid, APP_JOIN_UID_LEN);
+    } else {
+        memset(s_join_table[(uint8_t)free_idx].uid, 0, APP_JOIN_UID_LEN);
+    }
     s_join_table[(uint8_t)free_idx].node_id = assigned_id;
     s_join_table[(uint8_t)free_idx].parent_id = parent_id;
     s_join_table[(uint8_t)free_idx].last_seen_ms = platform_millis();
@@ -815,6 +929,7 @@ static void app_mark_node_seen(uint16_t node_id, uint32_t now_ms)
     bool found = false;
     bool was_online = false;
     bool stale_seen_while_online = false;
+    int8_t free_idx = -1;
 
     if (APP_COORDINATOR_MODE == 0U) {
         return;
@@ -838,7 +953,47 @@ static void app_mark_node_seen(uint16_t node_id, uint32_t now_ms)
             }
             s_join_table[i].last_seen_ms = now_ms;
             s_join_table[i].online = true;
+        } else if ((!s_join_table[i].used) && (free_idx < 0)) {
+            free_idx = (int8_t)i;
         }
+    }
+
+    if (!found && (free_idx >= 0)) {
+        uint8_t idx = (uint8_t)free_idx;
+        uint16_t parent = APP_COORDINATOR_ID;
+
+        if (node_id > APP_COORDINATOR_ID) {
+            parent = (uint16_t)(node_id - 1U);
+        }
+        if ((parent == APP_NODE_ID_UNASSIGNED) || (parent == APP_BROADCAST_ID) || (parent == node_id)) {
+            parent = APP_COORDINATOR_ID;
+        }
+
+        s_join_table[idx].used = true;
+        s_join_table[idx].nonce = 0U;
+        s_join_table[idx].uid_valid = false;
+        memset(s_join_table[idx].uid, 0, APP_JOIN_UID_LEN);
+        s_join_table[idx].node_id = node_id;
+        s_join_table[idx].parent_id = parent;
+        s_join_table[idx].last_seen_ms = now_ms;
+        s_join_table[idx].online = true;
+
+        if ((node_id >= APP_JOIN_FIRST_ASSIGN_ID) &&
+            (node_id <= APP_JOIN_LAST_ASSIGN_ID) &&
+            (node_id >= s_next_assigned_id)) {
+            s_next_assigned_id = (uint16_t)(node_id + 1U);
+            if (s_next_assigned_id > APP_JOIN_LAST_ASSIGN_ID) {
+                s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
+            }
+        }
+        if ((s_chain_tail_id == APP_NODE_ID_UNASSIGNED) || (node_id > s_chain_tail_id)) {
+            s_chain_tail_id = node_id;
+        }
+
+        uart1_write_str("INFO: learned node ");
+        uart1_write_u32((uint32_t)node_id);
+        uart1_write_str(" from relayed traffic\r\n");
+        return;
     }
 
     if (found && stale_seen_while_online) {
@@ -1051,6 +1206,8 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
     uint16_t nonce;
     uint16_t assigned_id;
     uint16_t parent_id;
+    uint8_t ack_uid[APP_JOIN_UID_LEN];
+    bool ack_uid_valid = false;
 
     if ((frame == NULL) || s_joined || (frame->payload_len < 4U)) {
         return;
@@ -1063,6 +1220,10 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
     } else {
         parent_id = APP_COORDINATOR_ID;
     }
+    if (frame->payload_len >= APP_JOIN_ACK_PAYLOAD_LEN) {
+        memcpy(ack_uid, &frame->payload[APP_JOIN_ACK_BASE_LEN], APP_JOIN_UID_LEN);
+        ack_uid_valid = app_uid_is_valid(ack_uid);
+    }
 
     if (nonce != s_join_nonce) {
         uart1_write_str("JOIN_ACK ignored nonce=");
@@ -1070,6 +1231,11 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
         uart1_write_str(" expected=");
         uart1_write_u32((uint32_t)s_join_nonce);
         uart1_write_str("\r\n");
+        return;
+    }
+
+    if (ack_uid_valid && !app_uid_equal(ack_uid, s_join_uid)) {
+        uart1_write_str("JOIN_ACK ignored uid mismatch\r\n");
         return;
     }
 
@@ -1103,6 +1269,8 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     uint16_t nonce;
     uint16_t assigned_id;
     uint16_t parent_id;
+    uint8_t join_uid[APP_JOIN_UID_LEN];
+    bool join_uid_valid;
     bool is_new_join;
     uint32_t now_ms;
 
@@ -1111,7 +1279,14 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     }
 
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
-    assigned_id = app_join_find_or_assign(nonce, &parent_id, &is_new_join);
+    memset(join_uid, 0, sizeof(join_uid));
+    join_uid_valid = false;
+    if (frame->payload_len >= APP_JOIN_REQ_PAYLOAD_LEN) {
+        memcpy(join_uid, &frame->payload[2], APP_JOIN_UID_LEN);
+        join_uid_valid = app_uid_is_valid(join_uid);
+    }
+
+    assigned_id = app_join_find_or_assign(nonce, join_uid, join_uid_valid, &parent_id, &is_new_join);
     if (assigned_id == APP_NODE_ID_UNASSIGNED) {
         return;
     }
@@ -1119,13 +1294,17 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     app_mark_node_seen(assigned_id, now_ms);
 
     app_frame_init(&reply, MSG_JOIN_ACK, s_node_id, APP_BROADCAST_ID, s_next_seq++);
-    reply.payload_len = 6U;
+    reply.payload_len = APP_JOIN_ACK_BASE_LEN;
     reply.payload[0] = (uint8_t)(nonce & 0xFFU);
     reply.payload[1] = (uint8_t)((nonce >> 8) & 0xFFU);
     reply.payload[2] = (uint8_t)(assigned_id & 0xFFU);
     reply.payload[3] = (uint8_t)((assigned_id >> 8) & 0xFFU);
     reply.payload[4] = (uint8_t)(parent_id & 0xFFU);
     reply.payload[5] = (uint8_t)((parent_id >> 8) & 0xFFU);
+    if (join_uid_valid) {
+        memcpy(&reply.payload[APP_JOIN_ACK_BASE_LEN], join_uid, APP_JOIN_UID_LEN);
+        reply.payload_len = APP_JOIN_ACK_PAYLOAD_LEN;
+    }
 
     if (app_send_frame(&reply)) {
         s_join_ack_count++;
@@ -1152,9 +1331,10 @@ static void app_send_join_request(uint32_t now_ms)
     }
 
     app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, dst_id, s_next_seq++);
-    req.payload_len = 2U;
+    req.payload_len = APP_JOIN_REQ_PAYLOAD_LEN;
     req.payload[0] = (uint8_t)(s_join_nonce & 0xFFU);
     req.payload[1] = (uint8_t)((s_join_nonce >> 8) & 0xFFU);
+    memcpy(&req.payload[2], s_join_uid, APP_JOIN_UID_LEN);
 
     if (app_send_frame(&req)) {
         s_join_req_count++;
@@ -1573,6 +1753,7 @@ static void app_handle_uart_line(char *line, uint32_t now_ms)
     cursor = skip_spaces(line);
     rstrip_spaces(cursor);
     if (*cursor == '\0') {
+        app_print_help();
         return;
     }
 
@@ -1872,6 +2053,7 @@ static void app_init_identity(void)
     memset(s_join_table, 0, sizeof(s_join_table));
 
     s_next_seq = 1U;
+    app_read_uid_bytes(s_join_uid);
     s_join_nonce = app_read_uid_nonce();
     s_last_join_req_ms = 0U;
     s_last_heartbeat_ms = 0U;
