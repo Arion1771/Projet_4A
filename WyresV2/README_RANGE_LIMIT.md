@@ -29,11 +29,11 @@ This document describes the range-limit warning feature added to the current LoR
 
 ## Key tuning parameters
 In `Src/main.c`:
-- `APP_LINK_LOST_MS` (current: `12000`)
+- `APP_LINK_LOST_MS` (current: `10000`)
 - `APP_LED_BLINK_FAST_MS` (current: `120`)
 - `APP_LED_BLINK_SLOW_MS` (current: `1000`)
-- `APP_HEARTBEAT_PERIOD_MS`
-- `APP_NODE_OFFLINE_MS`
+- `APP_HEARTBEAT_PERIOD_MS` (current: `500`)
+- `APP_NODE_OFFLINE_MS` (current: `10000`)
 
 ## UART diagnostics
 `status` now includes:

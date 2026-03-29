@@ -138,9 +138,9 @@ typedef struct {
 #define APP_ACK_BURST_GAP_MS      80U
 #define APP_RETRY_BACKOFF_MS      120U
 #define APP_JOIN_RETRY_MS         2000U
-#define APP_HEARTBEAT_PERIOD_MS   3000U
-#define APP_NODE_OFFLINE_MS       30000U
-#define APP_LINK_LOST_MS          12000U
+#define APP_HEARTBEAT_PERIOD_MS   500U
+#define APP_NODE_OFFLINE_MS       10000U
+#define APP_LINK_LOST_MS          10000U
 #define APP_LED_BLINK_FAST_MS     120U
 #define APP_LED_BLINK_SLOW_MS     1000U
 #define APP_LOOP_STEP_MS          20U
