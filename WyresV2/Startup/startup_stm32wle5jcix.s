@@ -83,8 +83,14 @@ g_pfnVectors:
   .word PendSV_Handler
   .word SysTick_Handler
 
-  /* External IRQ slots (STM32L151 has fewer than this, extra entries are harmless). */
-  .rept 64
+  /* External IRQ slots.
+   * Route USART1 IRQ explicitly so UART RX interrupt works on STM32L151.
+   */
+  .rept 37
+    .word Default_Handler
+  .endr
+  .word USART1_IRQHandler
+  .rept 26
     .word Default_Handler
   .endr
 .size g_pfnVectors, .-g_pfnVectors
@@ -107,3 +113,5 @@ g_pfnVectors:
 .thumb_set PendSV_Handler,Default_Handler
 .weak SysTick_Handler
 .thumb_set SysTick_Handler,Default_Handler
+.weak USART1_IRQHandler
+.thumb_set USART1_IRQHandler,Default_Handler

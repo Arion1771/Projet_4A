@@ -26,6 +26,21 @@
 #define LED2_PIN             (1UL << 3)   /* PB3 */
 
 #define STM32L1_UID_BASE     0x1FF80050UL
+#define STM32WL_UID_BASE     0x1FFF7590UL
+
+#if defined(STM32L151xx) || defined(STM32L151xC) || defined(STM32L151CCUx)
+#define STM32_UID_BASE       STM32L1_UID_BASE
+#elif defined(STM32WL) || defined(STM32WLSINGLE) || defined(STM32WLE5xx) || defined(STM32WL55xx) || defined(STM32WL54xx)
+#define STM32_UID_BASE       STM32WL_UID_BASE
+#else
+#define STM32_UID_BASE       STM32L1_UID_BASE
+#endif
+
+#if (STM32_UID_BASE == STM32L1_UID_BASE)
+#define STM32_UID_BASE_ALT   STM32WL_UID_BASE
+#else
+#define STM32_UID_BASE_ALT   STM32L1_UID_BASE
+#endif
 
 typedef struct {
     volatile uint32_t MODER;
@@ -84,9 +99,25 @@ typedef struct {
 #define USART_CR1_UE         (1UL << 13)
 #define USART_CR1_TE         (1UL << 3)
 #define USART_CR1_RE         (1UL << 2)
+#define USART_CR1_RXNEIE     (1UL << 5)
+#define USART_SR_ORE         (1UL << 3)
 #define USART_SR_RXNE        (1UL << 5)
 #define USART_SR_TXE         (1UL << 7)
 #define USART_SR_TC          (1UL << 6)
+
+#define NVIC_ISER_BASE       0xE000E100UL
+#define NVIC_ISER            ((volatile uint32_t *)NVIC_ISER_BASE)
+#define USART1_IRQ_NUMBER    37U
+#define UART_RX_RING_SIZE    128U
+
+#define SYSTICK_BASE         0xE000E010UL
+#define SYSTICK_CSR          (*(volatile uint32_t *)(SYSTICK_BASE + 0x0UL))
+#define SYSTICK_RVR          (*(volatile uint32_t *)(SYSTICK_BASE + 0x4UL))
+#define SYSTICK_CVR          (*(volatile uint32_t *)(SYSTICK_BASE + 0x8UL))
+
+#define SYSTICK_CSR_ENABLE   (1UL << 0)
+#define SYSTICK_CSR_TICKINT  (1UL << 1)
+#define SYSTICK_CSR_CLKSRC   (1UL << 2)
 
 /*
  * Network behavior knobs:
@@ -102,21 +133,31 @@ typedef struct {
 
 #define APP_ACK_TIMEOUT_MS        700U
 #define APP_ACK_MAX_RETRIES       3U
+#define APP_ACK_BURST_REPEAT      2U
+#define APP_ACK_BURST_DELAY_MS    80U
+#define APP_ACK_BURST_GAP_MS      80U
 #define APP_RETRY_BACKOFF_MS      120U
 #define APP_JOIN_RETRY_MS         2000U
 #define APP_HEARTBEAT_PERIOD_MS   3000U
 #define APP_NODE_OFFLINE_MS       30000U
+#define APP_LINK_LOST_MS          12000U
+#define APP_LED_BLINK_FAST_MS     120U
+#define APP_LED_BLINK_SLOW_MS     1000U
 #define APP_LOOP_STEP_MS          20U
 #define APP_STATUS_PERIOD_MS      1000U
 
 #define APP_UART_LINE_MAX         96U
 #define APP_UART_ECHO             0U
-#define APP_UART_AUTOSUBMIT_MS    180U
+#define APP_UART_AUTOSUBMIT_MS    3000U
 #define APP_RX_TRACK_SIZE         16U
 #define APP_RELAY_TRACK_SIZE      24U
 #define APP_JOIN_TABLE_SIZE       16U
 #define APP_JOIN_FIRST_ASSIGN_ID  2U
 #define APP_JOIN_LAST_ASSIGN_ID   250U
+#define APP_JOIN_UID_LEN          12U
+#define APP_JOIN_REQ_PAYLOAD_LEN  (2U + APP_JOIN_UID_LEN)
+#define APP_JOIN_ACK_BASE_LEN     6U
+#define APP_JOIN_ACK_PAYLOAD_LEN  (APP_JOIN_ACK_BASE_LEN + APP_JOIN_UID_LEN)
 
 typedef struct {
     bool active;
@@ -143,10 +184,21 @@ typedef struct {
 typedef struct {
     bool used;
     uint16_t nonce;
+    bool uid_valid;
+    uint8_t uid[APP_JOIN_UID_LEN];
     uint16_t node_id;
+    uint16_t parent_id;
     uint32_t last_seen_ms;
     bool online;
 } app_join_entry_t;
+
+typedef struct {
+    bool active;
+    uint16_t dst_id;
+    uint16_t seq;
+    uint8_t repeats_left;
+    uint32_t next_tx_ms;
+} app_ack_burst_t;
 
 static volatile uint32_t s_rx_count = 0U;
 static volatile uint32_t s_tx_count = 0U;
@@ -162,12 +214,22 @@ static uint16_t s_node_id = APP_NODE_ID_UNASSIGNED;
 static uint16_t s_default_dst_id = APP_COORDINATOR_ID;
 static uint16_t s_next_seq = 1U;
 static uint16_t s_join_nonce = 0U;
+static uint8_t s_join_uid[APP_JOIN_UID_LEN];
 static uint16_t s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
+static uint16_t s_chain_tail_id = APP_COORDINATOR_ID;
+static uint16_t s_parent_id = APP_COORDINATOR_ID;
 static uint32_t s_last_join_req_ms = 0U;
 static uint32_t s_last_heartbeat_ms = 0U;
 static bool s_joined = false;
+static uint8_t s_link_quality = 0U;
+static bool s_link_has_sample = false;
+static uint32_t s_link_last_coord_rx_ms = 0U;
+static bool s_link_lost_reported = false;
+static uint32_t s_led_link_next_toggle_ms = 0U;
+static uint8_t s_led_link_on = 0U;
 
 static app_pending_tx_t s_pending_tx;
+static app_ack_burst_t s_pending_ack_burst;
 static app_rx_track_entry_t s_rx_track[APP_RX_TRACK_SIZE];
 static app_relay_track_entry_t s_relay_track[APP_RELAY_TRACK_SIZE];
 static app_join_entry_t s_join_table[APP_JOIN_TABLE_SIZE];
@@ -176,9 +238,52 @@ static uint8_t s_relay_track_insert_idx = 0U;
 static char s_uart_line[APP_UART_LINE_MAX];
 static uint8_t s_uart_line_len = 0U;
 static uint32_t s_uart_last_rx_ms = 0U;
-static bool s_join_req_next_direct = false;
+static volatile uint32_t s_system_ms = 0U;
+static volatile uint8_t s_uart_rx_ring[UART_RX_RING_SIZE];
+static volatile uint8_t s_uart_rx_head = 0U;
+static volatile uint8_t s_uart_rx_tail = 0U;
 
 static void app_print_status(uint32_t now_ms);
+
+static void nvic_enable_irq(uint8_t irqn)
+{
+    NVIC_ISER[irqn / 32U] = (uint32_t)1UL << (irqn % 32U);
+}
+
+static void systick_init_1khz(void)
+{
+    /* 16 MHz core clock -> 1 ms tick */
+    SYSTICK_RVR = 16000UL - 1UL;
+    SYSTICK_CVR = 0UL;
+    SYSTICK_CSR = SYSTICK_CSR_ENABLE | SYSTICK_CSR_TICKINT | SYSTICK_CSR_CLKSRC;
+}
+
+void SysTick_Handler(void)
+{
+    s_system_ms++;
+}
+
+void USART1_IRQHandler(void)
+{
+    uint32_t sr = USART1->SR;
+
+    while ((sr & USART_SR_RXNE) != 0UL) {
+        uint8_t c = (uint8_t)(USART1->DR & 0xFFU);
+        uint8_t next = (uint8_t)(s_uart_rx_head + 1U);
+        if (next >= UART_RX_RING_SIZE) {
+            next = 0U;
+        }
+        if (next != s_uart_rx_tail) {
+            s_uart_rx_ring[s_uart_rx_head] = c;
+            s_uart_rx_head = next;
+        }
+        sr = USART1->SR;
+    }
+
+    if ((sr & USART_SR_ORE) != 0UL) {
+        (void)USART1->DR;
+    }
+}
 
 static void delay_cycles(volatile uint32_t cycles)
 {
@@ -257,7 +362,14 @@ static void uart1_init_115200(void)
     USART1->CR2 = 0UL;
     USART1->CR3 = 0UL;
     USART1->BRR = (16000000UL + (115200UL / 2UL)) / 115200UL;
-    USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
+    s_uart_rx_head = 0U;
+    s_uart_rx_tail = 0U;
+    while ((USART1->SR & USART_SR_RXNE) != 0UL) {
+        (void)USART1->DR;
+    }
+
+    USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE | USART_CR1_UE;
+    nvic_enable_irq(USART1_IRQ_NUMBER);
 }
 
 static void uart1_write_char(char c)
@@ -269,12 +381,29 @@ static void uart1_write_char(char c)
 
 static bool uart1_try_read_char(char *out_char)
 {
-    if ((out_char == NULL) || ((USART1->SR & USART_SR_RXNE) == 0UL)) {
+    uint8_t tail;
+
+    if (out_char == NULL) {
         return false;
     }
 
-    *out_char = (char)(USART1->DR & 0xFFU);
-    return true;
+    tail = s_uart_rx_tail;
+    if (tail != s_uart_rx_head) {
+        *out_char = (char)s_uart_rx_ring[tail];
+        tail++;
+        if (tail >= UART_RX_RING_SIZE) {
+            tail = 0U;
+        }
+        s_uart_rx_tail = tail;
+        return true;
+    }
+
+    if ((USART1->SR & USART_SR_RXNE) != 0UL) {
+        *out_char = (char)(USART1->DR & 0xFFU);
+        return true;
+    }
+
+    return false;
 }
 
 static void uart1_write_str(const char *s)
@@ -364,6 +493,26 @@ static char *skip_spaces(char *p)
     return p;
 }
 
+static void rstrip_spaces(char *p)
+{
+    size_t n;
+
+    if (p == NULL) {
+        return;
+    }
+
+    n = strlen(p);
+    while (n > 0U) {
+        char c = p[n - 1U];
+        if ((c == ' ') || (c == '\t') || (c == '\r') || (c == '\n')) {
+            p[n - 1U] = '\0';
+            n--;
+        } else {
+            break;
+        }
+    }
+}
+
 static bool parse_u16_token(char **cursor, uint16_t *out_value)
 {
     char *p;
@@ -393,10 +542,120 @@ static bool parse_u16_token(char **cursor, uint16_t *out_value)
     return true;
 }
 
+static void app_read_uid_words(uint32_t out_uid[3])
+{
+    const volatile uint32_t *uid_primary = (const volatile uint32_t *)STM32_UID_BASE;
+    const volatile uint32_t *uid_alt = (const volatile uint32_t *)STM32_UID_BASE_ALT;
+    uint32_t primary[3];
+    uint32_t alt[3];
+    bool primary_all_zero;
+    bool primary_all_ff;
+    bool alt_all_zero;
+    bool alt_all_ff;
+
+    if (out_uid == NULL) {
+        return;
+    }
+
+    primary[0] = uid_primary[0];
+    primary[1] = uid_primary[1];
+    primary[2] = uid_primary[2];
+    primary_all_zero = (primary[0] == 0U) && (primary[1] == 0U) && (primary[2] == 0U);
+    primary_all_ff = (primary[0] == 0xFFFFFFFFUL) &&
+                     (primary[1] == 0xFFFFFFFFUL) &&
+                     (primary[2] == 0xFFFFFFFFUL);
+
+    if (!primary_all_zero && !primary_all_ff) {
+        out_uid[0] = primary[0];
+        out_uid[1] = primary[1];
+        out_uid[2] = primary[2];
+        return;
+    }
+
+    alt[0] = uid_alt[0];
+    alt[1] = uid_alt[1];
+    alt[2] = uid_alt[2];
+    alt_all_zero = (alt[0] == 0U) && (alt[1] == 0U) && (alt[2] == 0U);
+    alt_all_ff = (alt[0] == 0xFFFFFFFFUL) &&
+                 (alt[1] == 0xFFFFFFFFUL) &&
+                 (alt[2] == 0xFFFFFFFFUL);
+
+    if (!alt_all_zero && !alt_all_ff) {
+        out_uid[0] = alt[0];
+        out_uid[1] = alt[1];
+        out_uid[2] = alt[2];
+        return;
+    }
+
+    /* Last resort: keep primary sample even if it looks invalid. */
+    out_uid[0] = primary[0];
+    out_uid[1] = primary[1];
+    out_uid[2] = primary[2];
+}
+
+static void app_read_uid_bytes(uint8_t out_uid[APP_JOIN_UID_LEN])
+{
+    uint32_t uid_words[3];
+    uint8_t i;
+
+    if (out_uid == NULL) {
+        return;
+    }
+
+    app_read_uid_words(uid_words);
+    for (i = 0U; i < 4U; i++) {
+        out_uid[i] = (uint8_t)((uid_words[0] >> (8U * i)) & 0xFFU);
+        out_uid[4U + i] = (uint8_t)((uid_words[1] >> (8U * i)) & 0xFFU);
+        out_uid[8U + i] = (uint8_t)((uid_words[2] >> (8U * i)) & 0xFFU);
+    }
+}
+
+static bool app_uid_is_valid(const uint8_t uid[APP_JOIN_UID_LEN])
+{
+    uint8_t i;
+    bool all_zero = true;
+    bool all_ff = true;
+
+    if (uid == NULL) {
+        return false;
+    }
+
+    for (i = 0U; i < APP_JOIN_UID_LEN; i++) {
+        if (uid[i] != 0x00U) {
+            all_zero = false;
+        }
+        if (uid[i] != 0xFFU) {
+            all_ff = false;
+        }
+    }
+
+    return (!all_zero && !all_ff);
+}
+
+static bool app_uid_equal(const uint8_t a[APP_JOIN_UID_LEN], const uint8_t b[APP_JOIN_UID_LEN])
+{
+    uint8_t i;
+
+    if ((a == NULL) || (b == NULL)) {
+        return false;
+    }
+
+    for (i = 0U; i < APP_JOIN_UID_LEN; i++) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static uint16_t app_read_uid_nonce(void)
 {
-    const volatile uint32_t *uid = (const volatile uint32_t *)STM32L1_UID_BASE;
-    uint32_t mix = uid[0] ^ uid[1] ^ uid[2];
+    uint32_t uid_words[3];
+    uint32_t mix;
+
+    app_read_uid_words(uid_words);
+    mix = uid_words[0] ^ uid_words[1] ^ uid_words[2];
     mix ^= (mix >> 16);
     if ((mix & 0xFFFFU) == 0U) {
         mix ^= 0x5A5A5A5AU;
@@ -622,15 +881,49 @@ static uint16_t app_join_allocate_id(void)
     return APP_NODE_ID_UNASSIGNED;
 }
 
-static uint16_t app_join_find_or_assign(uint16_t nonce)
+static uint16_t app_join_find_or_assign(uint16_t nonce,
+                                        const uint8_t join_uid[APP_JOIN_UID_LEN],
+                                        bool join_uid_valid,
+                                        uint16_t *out_parent_id,
+                                        bool *out_is_new)
 {
     uint8_t i;
     int8_t free_idx = -1;
     uint16_t assigned_id;
+    uint16_t parent_id = APP_COORDINATOR_ID;
+
+    if (out_parent_id != NULL) {
+        *out_parent_id = APP_COORDINATOR_ID;
+    }
+    if (out_is_new != NULL) {
+        *out_is_new = false;
+    }
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++) {
         if (s_join_table[i].used) {
-            if (s_join_table[i].nonce == nonce) {
+            bool same_identity = false;
+
+            if (join_uid_valid) {
+                if (s_join_table[i].uid_valid && app_uid_equal(s_join_table[i].uid, join_uid)) {
+                    same_identity = true;
+                } else if ((!s_join_table[i].uid_valid) && (s_join_table[i].nonce == nonce)) {
+                    /* Upgrade legacy nonce-only entry once UID becomes available. */
+                    s_join_table[i].uid_valid = true;
+                    memcpy(s_join_table[i].uid, join_uid, APP_JOIN_UID_LEN);
+                    same_identity = true;
+                }
+            } else if ((!s_join_table[i].uid_valid) && (s_join_table[i].nonce == nonce)) {
+                same_identity = true;
+            }
+
+            if (same_identity) {
+                s_join_table[i].nonce = nonce;
+                if (s_join_table[i].parent_id != APP_NODE_ID_UNASSIGNED) {
+                    parent_id = s_join_table[i].parent_id;
+                }
+                if (out_parent_id != NULL) {
+                    *out_parent_id = parent_id;
+                }
                 return s_join_table[i].node_id;
             }
         } else if (free_idx < 0) {
@@ -647,17 +940,40 @@ static uint16_t app_join_find_or_assign(uint16_t nonce)
         return APP_NODE_ID_UNASSIGNED;
     }
 
+    if ((s_chain_tail_id == APP_NODE_ID_UNASSIGNED) || (s_chain_tail_id == APP_BROADCAST_ID)) {
+        s_chain_tail_id = APP_COORDINATOR_ID;
+    }
+    parent_id = s_chain_tail_id;
+
     s_join_table[(uint8_t)free_idx].used = true;
     s_join_table[(uint8_t)free_idx].nonce = nonce;
+    s_join_table[(uint8_t)free_idx].uid_valid = join_uid_valid;
+    if (join_uid_valid) {
+        memcpy(s_join_table[(uint8_t)free_idx].uid, join_uid, APP_JOIN_UID_LEN);
+    } else {
+        memset(s_join_table[(uint8_t)free_idx].uid, 0, APP_JOIN_UID_LEN);
+    }
     s_join_table[(uint8_t)free_idx].node_id = assigned_id;
+    s_join_table[(uint8_t)free_idx].parent_id = parent_id;
     s_join_table[(uint8_t)free_idx].last_seen_ms = platform_millis();
     s_join_table[(uint8_t)free_idx].online = true;
+    s_chain_tail_id = assigned_id;
+    if (out_parent_id != NULL) {
+        *out_parent_id = parent_id;
+    }
+    if (out_is_new != NULL) {
+        *out_is_new = true;
+    }
     return assigned_id;
 }
 
 static void app_mark_node_seen(uint16_t node_id, uint32_t now_ms)
 {
     uint8_t i;
+    bool found = false;
+    bool was_online = false;
+    bool stale_seen_while_online = false;
+    int8_t free_idx = -1;
 
     if (APP_COORDINATOR_MODE == 0U) {
         return;
@@ -671,15 +987,76 @@ static void app_mark_node_seen(uint16_t node_id, uint32_t now_ms)
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++) {
         if (s_join_table[i].used && (s_join_table[i].node_id == node_id)) {
-            if (!s_join_table[i].online) {
-                uart1_write_str("INFO: node ");
-                uart1_write_u32((uint32_t)node_id);
-                uart1_write_str(" reconnected\r\n");
+            found = true;
+            if (s_join_table[i].online) {
+                was_online = true;
+                if ((now_ms >= s_join_table[i].last_seen_ms) &&
+                    ((now_ms - s_join_table[i].last_seen_ms) >= APP_NODE_OFFLINE_MS)) {
+                    stale_seen_while_online = true;
+                }
             }
             s_join_table[i].last_seen_ms = now_ms;
             s_join_table[i].online = true;
-            return;
+        } else if ((!s_join_table[i].used) && (free_idx < 0)) {
+            free_idx = (int8_t)i;
         }
+    }
+
+    if (!found && (free_idx >= 0)) {
+        uint8_t idx = (uint8_t)free_idx;
+        uint16_t parent = APP_COORDINATOR_ID;
+
+        if (node_id > APP_COORDINATOR_ID) {
+            parent = (uint16_t)(node_id - 1U);
+        }
+        if ((parent == APP_NODE_ID_UNASSIGNED) || (parent == APP_BROADCAST_ID) || (parent == node_id)) {
+            parent = APP_COORDINATOR_ID;
+        }
+
+        s_join_table[idx].used = true;
+        s_join_table[idx].nonce = 0U;
+        s_join_table[idx].uid_valid = false;
+        memset(s_join_table[idx].uid, 0, APP_JOIN_UID_LEN);
+        s_join_table[idx].node_id = node_id;
+        s_join_table[idx].parent_id = parent;
+        s_join_table[idx].last_seen_ms = now_ms;
+        s_join_table[idx].online = true;
+
+        if ((node_id >= APP_JOIN_FIRST_ASSIGN_ID) &&
+            (node_id <= APP_JOIN_LAST_ASSIGN_ID) &&
+            (node_id >= s_next_assigned_id)) {
+            s_next_assigned_id = (uint16_t)(node_id + 1U);
+            if (s_next_assigned_id > APP_JOIN_LAST_ASSIGN_ID) {
+                s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
+            }
+        }
+        if ((s_chain_tail_id == APP_NODE_ID_UNASSIGNED) || (node_id > s_chain_tail_id)) {
+            s_chain_tail_id = node_id;
+        }
+
+        uart1_write_str("INFO: learned node ");
+        uart1_write_u32((uint32_t)node_id);
+        uart1_write_str(" from relayed traffic\r\n");
+        if (parent != APP_COORDINATOR_ID) {
+            /*
+             * Linear chain inference: if node N is seen through relay,
+             * predecessor N-1 is part of the connected path as well.
+             */
+            app_mark_node_seen(parent, now_ms);
+        }
+        return;
+    }
+
+    if (found && stale_seen_while_online) {
+        uart1_write_str("WARN: node ");
+        uart1_write_u32((uint32_t)node_id);
+        uart1_write_str(" disconnected\r\n");
+    }
+
+    if (found && (!was_online || stale_seen_while_online)) {
+        uart1_write_str("INFO: node ");
+        uart1_write_u32((uint32_t)node_id);
+        uart1_write_str(" reconnected\r\n");
     }
 }
 
@@ -724,6 +1101,8 @@ static void app_print_nodes(void)
         found = true;
         uart1_write_str("[id=");
         uart1_write_u32((uint32_t)s_join_table[i].node_id);
+        uart1_write_str(" parent=");
+        uart1_write_u32((uint32_t)s_join_table[i].parent_id);
         uart1_write_str(" nonce=");
         uart1_write_u32((uint32_t)s_join_table[i].nonce);
         uart1_write_str(" state=");
@@ -742,14 +1121,62 @@ static void app_print_nodes(void)
 static void app_send_ack(uint16_t dst_id, uint16_t ack_seq)
 {
     wyresv2_frame_t ack;
+    uint32_t now_ms;
 
     if (s_node_id == APP_NODE_ID_UNASSIGNED) {
         return;
     }
 
+    now_ms = platform_millis();
     app_frame_init(&ack, MSG_ACK, s_node_id, dst_id, ack_seq);
     if (app_send_frame(&ack)) {
         s_ack_tx_count++;
+    }
+
+    if ((dst_id != APP_NODE_ID_UNASSIGNED) && (dst_id != APP_BROADCAST_ID)) {
+        s_pending_ack_burst.active = true;
+        s_pending_ack_burst.dst_id = dst_id;
+        s_pending_ack_burst.seq = ack_seq;
+        s_pending_ack_burst.repeats_left = APP_ACK_BURST_REPEAT;
+        s_pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_DELAY_MS;
+    }
+}
+
+static void app_process_ack_burst(uint32_t now_ms)
+{
+    wyresv2_frame_t ack;
+
+    if (!s_pending_ack_burst.active) {
+        return;
+    }
+
+    if (s_node_id == APP_NODE_ID_UNASSIGNED) {
+        s_pending_ack_burst.active = false;
+        return;
+    }
+
+    if ((int32_t)(now_ms - s_pending_ack_burst.next_tx_ms) < 0) {
+        return;
+    }
+
+    app_frame_init(&ack,
+                   MSG_ACK,
+                   s_node_id,
+                   s_pending_ack_burst.dst_id,
+                   s_pending_ack_burst.seq);
+    ack.payload_len = 0U;
+
+    if (!app_send_frame(&ack)) {
+        s_pending_ack_burst.next_tx_ms = now_ms + 30U;
+        return;
+    }
+
+    s_ack_tx_count++;
+    s_pending_ack_burst.repeats_left--;
+    if (s_pending_ack_burst.repeats_left == 0U) {
+        s_pending_ack_burst.active = false;
+    } else {
+        s_pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_GAP_MS;
     }
 }
 
@@ -829,6 +1256,9 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
 {
     uint16_t nonce;
     uint16_t assigned_id;
+    uint16_t parent_id;
+    uint8_t ack_uid[APP_JOIN_UID_LEN];
+    bool ack_uid_valid = false;
 
     if ((frame == NULL) || s_joined || (frame->payload_len < 4U)) {
         return;
@@ -836,13 +1266,32 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
 
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
     assigned_id = (uint16_t)frame->payload[2] | ((uint16_t)frame->payload[3] << 8);
-
+    if (frame->payload_len >= 6U) {
+        parent_id = (uint16_t)frame->payload[4] | ((uint16_t)frame->payload[5] << 8);
+    } else {
+        parent_id = APP_COORDINATOR_ID;
+    }
     if (nonce != s_join_nonce) {
         uart1_write_str("JOIN_ACK ignored nonce=");
         uart1_write_u32((uint32_t)nonce);
         uart1_write_str(" expected=");
         uart1_write_u32((uint32_t)s_join_nonce);
         uart1_write_str("\r\n");
+        return;
+    }
+
+    if (frame->payload_len < APP_JOIN_ACK_PAYLOAD_LEN) {
+        uart1_write_str("JOIN_ACK ignored missing uid\r\n");
+        return;
+    }
+    memcpy(ack_uid, &frame->payload[APP_JOIN_ACK_BASE_LEN], APP_JOIN_UID_LEN);
+    ack_uid_valid = app_uid_is_valid(ack_uid);
+    if (!ack_uid_valid) {
+        uart1_write_str("JOIN_ACK ignored invalid uid\r\n");
+        return;
+    }
+    if (!app_uid_equal(ack_uid, s_join_uid)) {
+        uart1_write_str("JOIN_ACK ignored uid mismatch\r\n");
         return;
     }
 
@@ -856,11 +1305,17 @@ static void app_process_join_ack_frame(const wyresv2_frame_t *frame)
 
     s_node_id = assigned_id;
     s_joined = true;
-    s_default_dst_id = APP_COORDINATOR_ID;
+    s_parent_id = parent_id;
+    if ((s_parent_id == APP_NODE_ID_UNASSIGNED) || (s_parent_id == APP_BROADCAST_ID)) {
+        s_parent_id = APP_COORDINATOR_ID;
+    }
+    s_default_dst_id = s_parent_id;
     platform_led_set(LED_INSERTED);
 
     uart1_write_str("JOINED node_id=");
     uart1_write_u32((uint32_t)s_node_id);
+    uart1_write_str(" parent=");
+    uart1_write_u32((uint32_t)s_parent_id);
     uart1_write_str("\r\n");
 }
 
@@ -869,14 +1324,26 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     wyresv2_frame_t reply;
     uint16_t nonce;
     uint16_t assigned_id;
+    uint16_t parent_id;
+    uint8_t join_uid[APP_JOIN_UID_LEN];
+    bool join_uid_valid;
+    bool is_new_join;
     uint32_t now_ms;
 
-    if ((frame == NULL) || (APP_COORDINATOR_MODE == 0U) || (frame->payload_len < 2U)) {
+    if ((frame == NULL) || (APP_COORDINATOR_MODE == 0U) ||
+        (frame->payload_len < APP_JOIN_REQ_PAYLOAD_LEN)) {
         return;
     }
 
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
-    assigned_id = app_join_find_or_assign(nonce);
+    memcpy(join_uid, &frame->payload[2], APP_JOIN_UID_LEN);
+    join_uid_valid = app_uid_is_valid(join_uid);
+    if (!join_uid_valid) {
+        uart1_write_str("JOIN_REQ ignored invalid uid\r\n");
+        return;
+    }
+
+    assigned_id = app_join_find_or_assign(nonce, join_uid, join_uid_valid, &parent_id, &is_new_join);
     if (assigned_id == APP_NODE_ID_UNASSIGNED) {
         return;
     }
@@ -884,11 +1351,17 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
     app_mark_node_seen(assigned_id, now_ms);
 
     app_frame_init(&reply, MSG_JOIN_ACK, s_node_id, APP_BROADCAST_ID, s_next_seq++);
-    reply.payload_len = 4U;
+    reply.payload_len = APP_JOIN_ACK_BASE_LEN;
     reply.payload[0] = (uint8_t)(nonce & 0xFFU);
     reply.payload[1] = (uint8_t)((nonce >> 8) & 0xFFU);
     reply.payload[2] = (uint8_t)(assigned_id & 0xFFU);
     reply.payload[3] = (uint8_t)((assigned_id >> 8) & 0xFFU);
+    reply.payload[4] = (uint8_t)(parent_id & 0xFFU);
+    reply.payload[5] = (uint8_t)((parent_id >> 8) & 0xFFU);
+    if (join_uid_valid) {
+        memcpy(&reply.payload[APP_JOIN_ACK_BASE_LEN], join_uid, APP_JOIN_UID_LEN);
+        reply.payload_len = APP_JOIN_ACK_PAYLOAD_LEN;
+    }
 
     if (app_send_frame(&reply)) {
         s_join_ack_count++;
@@ -896,6 +1369,11 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
         uart1_write_u32((uint32_t)nonce);
         uart1_write_str(" -> id=");
         uart1_write_u32((uint32_t)assigned_id);
+        uart1_write_str(" parent=");
+        uart1_write_u32((uint32_t)parent_id);
+        if (is_new_join) {
+            s_default_dst_id = assigned_id;
+        }
         uart1_write_str("\r\n");
     }
 }
@@ -903,26 +1381,21 @@ static void app_process_join_request_frame(const wyresv2_frame_t *frame)
 static void app_send_join_request(uint32_t now_ms)
 {
     wyresv2_frame_t req;
-    uint16_t dst_id;
+    uint16_t dst_id = APP_BROADCAST_ID;
 
     if (s_joined || (APP_COORDINATOR_MODE != 0U) || (APP_FIXED_NODE_ID != 0U)) {
         return;
     }
 
-    /*
-     * Alternate destination between broadcast and direct coordinator:
-     * this avoids back-to-back TX busy and improves compatibility.
-     */
-    dst_id = s_join_req_next_direct ? APP_COORDINATOR_ID : APP_BROADCAST_ID;
     app_frame_init(&req, MSG_JOIN_REQ, APP_NODE_ID_UNASSIGNED, dst_id, s_next_seq++);
-    req.payload_len = 2U;
+    req.payload_len = APP_JOIN_REQ_PAYLOAD_LEN;
     req.payload[0] = (uint8_t)(s_join_nonce & 0xFFU);
     req.payload[1] = (uint8_t)((s_join_nonce >> 8) & 0xFFU);
+    memcpy(&req.payload[2], s_join_uid, APP_JOIN_UID_LEN);
 
     if (app_send_frame(&req)) {
         s_join_req_count++;
         s_last_join_req_ms = now_ms;
-        s_join_req_next_direct = !s_join_req_next_direct;
         uart1_write_str("JOIN_REQ nonce=");
         uart1_write_u32((uint32_t)s_join_nonce);
         uart1_write_str(" dst=");
@@ -931,6 +1404,8 @@ static void app_send_join_request(uint32_t now_ms)
         } else {
             uart1_write_u32((uint32_t)dst_id);
         }
+        uart1_write_str(" txv=");
+        uart1_write_u32((uint32_t)platform_radio_dbg_tx_variant());
         uart1_write_str("\r\n");
     } else {
         uart1_write_str("JOIN_REQ tx busy dst=");
@@ -939,6 +1414,8 @@ static void app_send_join_request(uint32_t now_ms)
         } else {
             uart1_write_u32((uint32_t)dst_id);
         }
+        uart1_write_str(" txv=");
+        uart1_write_u32((uint32_t)platform_radio_dbg_tx_variant());
         uart1_write_str("\r\n");
     }
 }
@@ -962,6 +1439,90 @@ static void app_send_heartbeat(uint32_t now_ms)
 
     if (app_send_frame(&hb)) {
         s_last_heartbeat_ms = now_ms;
+    }
+}
+
+static uint8_t app_score_from_rssi(int16_t rssi)
+{
+    if (rssi <= -120) {
+        return 0U;
+    }
+    if (rssi >= -85) {
+        return 100U;
+    }
+    return (uint8_t)(((int32_t)(rssi + 120) * 100) / 35);
+}
+
+static uint8_t app_score_from_snr(int8_t snr)
+{
+    if (snr <= -20) {
+        return 0U;
+    }
+    if (snr >= 10) {
+        return 100U;
+    }
+    return (uint8_t)(((int32_t)(snr + 20) * 100) / 30);
+}
+
+static void app_link_note_coordinator_rx(int16_t rssi, int8_t snr, uint32_t now_ms)
+{
+    uint8_t rssi_score;
+    uint8_t snr_score;
+    uint8_t sample;
+
+    rssi_score = app_score_from_rssi(rssi);
+    snr_score = app_score_from_snr(snr);
+    sample = (uint8_t)(((uint16_t)rssi_score * 7U + (uint16_t)snr_score * 3U) / 10U);
+
+    if (!s_link_has_sample) {
+        s_link_quality = sample;
+        s_link_has_sample = true;
+    } else {
+        s_link_quality = (uint8_t)(((uint16_t)s_link_quality * 7U + (uint16_t)sample * 3U) / 10U);
+    }
+
+    s_link_last_coord_rx_ms = now_ms;
+    if (s_link_lost_reported) {
+        s_link_lost_reported = false;
+        s_led_link_next_toggle_ms = 0U;
+        uart1_write_str("INFO: coordinator link restored\r\n");
+    }
+}
+
+static void app_update_link_led(uint32_t now_ms)
+{
+    uint32_t blink_period_ms;
+
+    if ((APP_COORDINATOR_MODE != 0U) || !s_joined || (s_node_id == APP_NODE_ID_UNASSIGNED)) {
+        return;
+    }
+
+    if (!s_link_has_sample) {
+        s_led_link_on = 1U;
+        led_write(1U);
+        s_led_link_next_toggle_ms = 0U;
+        return;
+    }
+
+    if ((now_ms - s_link_last_coord_rx_ms) >= APP_LINK_LOST_MS) {
+        if (!s_link_lost_reported) {
+            s_link_lost_reported = true;
+            uart1_write_str("WARN: coordinator link lost, LED off\r\n");
+        }
+        s_led_link_on = 0U;
+        led_write(0U);
+        s_led_link_next_toggle_ms = 0U;
+        return;
+    }
+
+    blink_period_ms = APP_LED_BLINK_FAST_MS +
+                      (((uint32_t)s_link_quality * (APP_LED_BLINK_SLOW_MS - APP_LED_BLINK_FAST_MS)) / 100U);
+
+    if ((s_led_link_next_toggle_ms == 0U) ||
+        ((int32_t)(now_ms - s_led_link_next_toggle_ms) >= 0)) {
+        s_led_link_on = (uint8_t)(s_led_link_on == 0U ? 1U : 0U);
+        led_write(s_led_link_on);
+        s_led_link_next_toggle_ms = now_ms + blink_period_ms;
     }
 }
 
@@ -1060,19 +1621,35 @@ static bool app_should_relay_frame(const wyresv2_frame_t *frame)
         return false;
     }
 
-    if (frame->dst_id == s_node_id) {
+    if ((s_node_id == APP_NODE_ID_UNASSIGNED) || (frame->dst_id == s_node_id)) {
         return false;
     }
 
     /*
-     * Unicast frames are relayed.
-     * Broadcast is relayed for JOIN_REQ/JOIN_ACK to allow multi-hop join.
+     * Broadcast is relayed for JOIN_REQ/JOIN_ACK to allow chain extension.
      */
     if (frame->dst_id == APP_BROADCAST_ID) {
         return (frame->type == MSG_JOIN_ACK) || (frame->type == MSG_JOIN_REQ);
     }
 
-    return true;
+    if ((frame->src_id == APP_NODE_ID_UNASSIGNED) ||
+        (frame->dst_id == APP_NODE_ID_UNASSIGNED) ||
+        (frame->src_id == frame->dst_id)) {
+        return false;
+    }
+
+    /*
+     * Linear unicast relay:
+     * relay only if this node id is strictly between src and dst ids.
+     */
+    if ((frame->src_id < s_node_id) && (s_node_id < frame->dst_id)) {
+        return true;
+    }
+    if ((frame->dst_id < s_node_id) && (s_node_id < frame->src_id)) {
+        return true;
+    }
+
+    return false;
 }
 
 static void app_relay_frame(const wyresv2_frame_t *frame, link_direction_t from)
@@ -1099,37 +1676,37 @@ static void app_relay_frame(const wyresv2_frame_t *frame, link_direction_t from)
         return;
     }
 
-    out_dir = (from == LINK_PREDECESSOR) ? LINK_SUCCESSOR : LINK_PREDECESSOR;
+    if (relay.dst_id == APP_BROADCAST_ID) {
+        out_dir = (from == LINK_PREDECESSOR) ? LINK_SUCCESSOR : LINK_PREDECESSOR;
+    } else {
+        out_dir = (relay.dst_id > s_node_id) ? LINK_SUCCESSOR : LINK_PREDECESSOR;
+    }
     if (app_send_raw_dir(out_dir, raw, raw_len)) {
         app_relay_remember(frame->src_id, frame->seq);
-        if ((frame->type == MSG_JOIN_REQ) || (frame->type == MSG_JOIN_ACK)) {
-            uart1_write_str("RELAY ");
-            uart1_write_str((frame->type == MSG_JOIN_REQ) ? "JOIN_REQ" : "JOIN_ACK");
-            uart1_write_str(" src=");
-            uart1_write_u32((uint32_t)frame->src_id);
-            uart1_write_str(" dst=");
-            uart1_write_u32((uint32_t)frame->dst_id);
-            uart1_write_str(" ttl=");
-            uart1_write_u32((uint32_t)relay.ttl);
-            uart1_write_str("\r\n");
-        }
+        uart1_write_str("RELAY PASS src=");
+        uart1_write_u32((uint32_t)frame->src_id);
+        uart1_write_str(" dst=");
+        uart1_write_u32((uint32_t)frame->dst_id);
+        uart1_write_str(" type=");
+        uart1_write_u32((uint32_t)frame->type);
+        uart1_write_str(" ttl=");
+        uart1_write_u32((uint32_t)relay.ttl);
+        uart1_write_str("\r\n");
         return;
     }
 
     /* Single-radio fallback (dir may be ignored by backend anyway). */
     if (app_send_raw(raw, raw_len)) {
         app_relay_remember(frame->src_id, frame->seq);
-        if ((frame->type == MSG_JOIN_REQ) || (frame->type == MSG_JOIN_ACK)) {
-            uart1_write_str("RELAY ");
-            uart1_write_str((frame->type == MSG_JOIN_REQ) ? "JOIN_REQ" : "JOIN_ACK");
-            uart1_write_str(" src=");
-            uart1_write_u32((uint32_t)frame->src_id);
-            uart1_write_str(" dst=");
-            uart1_write_u32((uint32_t)frame->dst_id);
-            uart1_write_str(" ttl=");
-            uart1_write_u32((uint32_t)relay.ttl);
-            uart1_write_str(" (fallback)\r\n");
-        }
+        uart1_write_str("RELAY PASS src=");
+        uart1_write_u32((uint32_t)frame->src_id);
+        uart1_write_str(" dst=");
+        uart1_write_u32((uint32_t)frame->dst_id);
+        uart1_write_str(" type=");
+        uart1_write_u32((uint32_t)frame->type);
+        uart1_write_str(" ttl=");
+        uart1_write_u32((uint32_t)relay.ttl);
+        uart1_write_str(" mode=fallback\r\n");
     }
 }
 
@@ -1144,7 +1721,7 @@ static void app_print_help(void)
     uart1_write_str("  broadcast <text>  -> send broadcast text (no ACK)\r\n");
     uart1_write_str("  join              -> force join request now\r\n");
     uart1_write_str("  help              -> show this help\r\n");
-    uart1_write_str("  <text>            -> send to current dst\r\n");
+    uart1_write_str("  <text>            -> linear send to current dst (n-1 / n+1)\r\n");
 }
 
 static void app_print_identity(void)
@@ -1155,9 +1732,32 @@ static void app_print_identity(void)
     uart1_write_str(s_joined ? "yes" : "no");
     uart1_write_str(" dst=");
     uart1_write_u32((uint32_t)s_default_dst_id);
+    uart1_write_str(" parent=");
+    uart1_write_u32((uint32_t)s_parent_id);
     uart1_write_str(" coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "yes" : "no");
     uart1_write_str("\r\n");
+}
+
+static bool app_is_linear_neighbor_id(uint16_t node_id)
+{
+    if (!s_joined || (s_node_id == APP_NODE_ID_UNASSIGNED)) {
+        return false;
+    }
+
+    if ((node_id == APP_NODE_ID_UNASSIGNED) || (node_id == APP_BROADCAST_ID)) {
+        return false;
+    }
+
+    if ((s_node_id > APP_COORDINATOR_ID) && (node_id == (uint16_t)(s_node_id - 1U))) {
+        return true;
+    }
+
+    if ((s_node_id < APP_JOIN_LAST_ASSIGN_ID) && (node_id == (uint16_t)(s_node_id + 1U))) {
+        return true;
+    }
+
+    return false;
 }
 
 static void app_send_text_from_line(uint16_t dst_id, char *text, uint32_t now_ms)
@@ -1204,7 +1804,9 @@ static void app_handle_uart_line(char *line, uint32_t now_ms)
     }
 
     cursor = skip_spaces(line);
+    rstrip_spaces(cursor);
     if (*cursor == '\0') {
+        app_print_help();
         return;
     }
 
@@ -1244,6 +1846,12 @@ static void app_handle_uart_line(char *line, uint32_t now_ms)
             uart1_write_str("Usage: dst <id>\r\n");
             return;
         }
+        if ((APP_COORDINATOR_MODE == 0U) &&
+            s_joined &&
+            !app_is_linear_neighbor_id(parsed_id)) {
+            uart1_write_str("ERR: linear mode allows only n-1 or n+1 in dst\r\n");
+            return;
+        }
         s_default_dst_id = parsed_id;
         uart1_write_str("Default dst=");
         uart1_write_u32((uint32_t)s_default_dst_id);
@@ -1277,6 +1885,14 @@ static void app_handle_uart_line(char *line, uint32_t now_ms)
         return;
     }
 
+    if ((APP_COORDINATOR_MODE == 0U) &&
+        s_joined &&
+        (s_default_dst_id != APP_BROADCAST_ID) &&
+        !app_is_linear_neighbor_id(s_default_dst_id)) {
+        uart1_write_str("ERR: default dst must be n-1 or n+1 in linear mode\r\n");
+        return;
+    }
+
     app_send_text_from_line(s_default_dst_id, cursor, now_ms);
 }
 
@@ -1301,12 +1917,10 @@ static void app_poll_uart(uint32_t now_ms)
         }
 
         if ((c == '\b') || ((uint8_t)c == 0x7FU)) {
-            if (s_uart_line_len > 0U) {
-                s_uart_line_len--;
-#if (APP_UART_ECHO != 0U)
-                uart1_write_str("\b \b");
-#endif
-            }
+            /*
+             * Ignore backspace/delete control bytes.
+             * Some USB-serial tools inject 0x7F and this was truncating payload text.
+             */
             continue;
         }
 
@@ -1333,8 +1947,8 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
 {
     wyresv2_frame_t frame;
     bool parsed;
+    uint32_t now_ms;
 
-    (void)from;
     s_rx_count++;
 
     parsed = app_parse_frame(&frame, data, len);
@@ -1353,11 +1967,17 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
      */
     app_relay_frame(&frame, from);
 
+    now_ms = platform_millis();
+    if ((APP_COORDINATOR_MODE == 0U) && (frame.src_id == APP_COORDINATOR_ID)) {
+        app_link_note_coordinator_rx(rssi, snr, now_ms);
+    }
+
     if ((APP_COORDINATOR_MODE != 0U) &&
         (frame.src_id != APP_NODE_ID_UNASSIGNED) &&
         (frame.src_id != APP_BROADCAST_ID) &&
         (frame.src_id != APP_COORDINATOR_ID)) {
-        app_mark_node_seen(frame.src_id, platform_millis());
+        app_check_node_disconnects(now_ms);
+        app_mark_node_seen(frame.src_id, now_ms);
     }
 
     switch (frame.type) {
@@ -1385,7 +2005,11 @@ static void app_radio_rx_cb(link_direction_t from, const uint8_t *data, uint16_t
         break;
 
     case MSG_HEARTBEAT:
-        /* Presence is handled above via src_id tracking. */
+        if ((APP_COORDINATOR_MODE != 0U) &&
+            ((frame.dst_id == s_node_id) || (frame.dst_id == APP_BROADCAST_ID)) &&
+            (frame.src_id != APP_NODE_ID_UNASSIGNED)) {
+            app_send_ack(frame.src_id, frame.seq);
+        }
         break;
 
     default:
@@ -1404,6 +2028,8 @@ static void app_periodic(uint32_t now_ms)
     app_send_heartbeat(now_ms);
     app_check_node_disconnects(now_ms);
     app_pending_process(now_ms);
+    app_process_ack_burst(now_ms);
+    app_update_link_led(now_ms);
 }
 
 static void app_print_status(uint32_t now_ms)
@@ -1425,6 +2051,8 @@ static void app_print_status(uint32_t now_ms)
     uart1_write_u32(s_ack_tx_count);
     uart1_write_str(" ACKrx=");
     uart1_write_u32(s_ack_rx_count);
+    uart1_write_str(" AB=");
+    uart1_write_u32((uint32_t)(s_pending_ack_burst.active ? 1U : 0U));
     uart1_write_str(" RTY=");
     uart1_write_u32(s_retry_count);
     uart1_write_str(" ATO=");
@@ -1447,6 +2075,23 @@ static void app_print_status(uint32_t now_ms)
     uart1_write_hex8(irq);
     uart1_write_str(" OPM=0x");
     uart1_write_hex8(opm);
+    uart1_write_str(" TV=");
+    uart1_write_u32((uint32_t)platform_radio_dbg_tx_variant());
+    uart1_write_str(" tail=");
+    uart1_write_u32((uint32_t)s_chain_tail_id);
+    uart1_write_str(" dst=");
+    uart1_write_u32((uint32_t)s_default_dst_id);
+    uart1_write_str(" parent=");
+    uart1_write_u32((uint32_t)s_parent_id);
+    uart1_write_str(" LQ=");
+    uart1_write_u32((uint32_t)s_link_quality);
+    uart1_write_str(" LAge=");
+    if (s_link_has_sample) {
+        uart1_write_u32((uint32_t)(now_ms - s_link_last_coord_rx_ms));
+    } else {
+        uart1_write_u32(0U);
+    }
+    uart1_write_str("ms");
     uart1_write_str(" BAT=");
     uart1_write_u32(platform_battery_mv());
     uart1_write_str("mV\r\n");
@@ -1455,17 +2100,26 @@ static void app_print_status(uint32_t now_ms)
 static void app_init_identity(void)
 {
     memset(&s_pending_tx, 0, sizeof(s_pending_tx));
+    memset(&s_pending_ack_burst, 0, sizeof(s_pending_ack_burst));
     memset(s_rx_track, 0, sizeof(s_rx_track));
     memset(s_relay_track, 0, sizeof(s_relay_track));
     memset(s_join_table, 0, sizeof(s_join_table));
 
     s_next_seq = 1U;
+    app_read_uid_bytes(s_join_uid);
     s_join_nonce = app_read_uid_nonce();
     s_last_join_req_ms = 0U;
     s_last_heartbeat_ms = 0U;
     s_next_assigned_id = APP_JOIN_FIRST_ASSIGN_ID;
+    s_chain_tail_id = APP_COORDINATOR_ID;
+    s_parent_id = APP_COORDINATOR_ID;
     s_relay_track_insert_idx = 0U;
-    s_join_req_next_direct = false;
+    s_link_quality = 0U;
+    s_link_has_sample = false;
+    s_link_last_coord_rx_ms = 0U;
+    s_link_lost_reported = false;
+    s_led_link_next_toggle_ms = 0U;
+    s_led_link_on = 0U;
 
     if (APP_FIXED_NODE_ID != 0U) {
         s_node_id = APP_FIXED_NODE_ID;
@@ -1497,10 +2151,12 @@ void Error_Handler(void)
 int main(void)
 {
     uint32_t i;
-    uint32_t now_ms = 0U;
+    uint32_t now_ms;
+    uint32_t last_periodic_ms = 0xFFFFFFFFUL;
     bool radio_ok;
 
     system_clock_init_hsi_16mhz();
+    systick_init_1khz();
 
     RCC->AHBENR |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN;
     gpio_set_output(GPIOA, 0U);
@@ -1517,7 +2173,7 @@ int main(void)
     app_init_identity();
 
     uart1_write_str("BOOT WYRESV2 STM32L151\r\n");
-    uart1_write_str("BUILD: JOIN_ALT_DST_STATUS\r\n");
+    uart1_write_str("BUILD: RANGE_LED_WARN_V1\r\n");
     uart1_write_str("MODE: LoRa text + ID join + ACK retransmission\r\n");
     uart1_write_str("cfg coordinator=");
     uart1_write_str((APP_COORDINATOR_MODE != 0U) ? "1" : "0");
@@ -1573,16 +2229,17 @@ int main(void)
     uart1_write_str("> ");
 
     while (1) {
+        now_ms = s_system_ms;
         platform_port_set_time_ms(now_ms);
         platform_radio_process();
 
         if (radio_ok) {
             app_poll_uart(now_ms);
-            app_periodic(now_ms);
+            if (now_ms != last_periodic_ms) {
+                app_periodic(now_ms);
+                last_periodic_ms = now_ms;
+            }
         }
-
-        now_ms += APP_LOOP_STEP_MS;
-        delay_ms(APP_LOOP_STEP_MS);
     }
 }
 

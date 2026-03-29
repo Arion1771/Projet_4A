@@ -100,6 +100,7 @@
 #define RADIO_FORCE_PROFILE_INDEX  26U
 #define RADIO_FORCE_SLOW_SPI       1U
 #define SPI_NSS_GUARD_CYCLES       220UL
+#define RADIO_TX_VARIANT_COUNT     4U
 
 #define PIN_NONE                   0xFFU
 
@@ -298,6 +299,8 @@ static uint32_t s_dbg_rearm_count = 0U;
 static uint32_t s_dbg_hard_reset_count = 0U;
 static uint8_t s_dbg_last_irq_flags = 0U;
 static uint8_t s_dbg_last_opmode = 0U;
+static uint8_t s_dbg_last_tx_variant = 0U;
+static uint8_t s_tx_variant = 0U;
 static bool s_led2_enabled = true;
 static bool s_spi_cpol = false;
 static bool s_spi_cpha = false;
@@ -512,22 +515,50 @@ static void radio_write_fifo(const uint8_t *buffer, uint8_t len)
 
 static void radio_set_rf_switch(bool tx_on)
 {
-    (void)tx_on;
 #if RADIO_USE_RF_SWITCH
+    bool rf_tx = true;
+    bool rf_rx = true;
+
     if (s_profile == NULL) {
         return;
     }
-    /*
-     * Wyres REVC/REVD RF switch policy (from legacy BSP behavior):
-     * - TX: rf_tx=0, rf_rx=1
-     * - RX: rf_tx=1, rf_rx=1
-     */
+
+    if (tx_on) {
+        /*
+         * TX fallback variants:
+         * 0: legacy    rf_tx=0 rf_rx=1
+         * 1: both high rf_tx=1 rf_rx=1
+         * 2: both low  rf_tx=0 rf_rx=0
+         * 3: inverse   rf_tx=1 rf_rx=0
+         */
+        switch (s_dbg_last_tx_variant & 0x03U) {
+        case 0U:
+            rf_tx = false;
+            rf_rx = true;
+            break;
+        case 1U:
+            rf_tx = true;
+            rf_rx = true;
+            break;
+        case 2U:
+            rf_tx = false;
+            rf_rx = false;
+            break;
+        default:
+            rf_tx = true;
+            rf_rx = false;
+            break;
+        }
+    }
+
     if ((s_profile->rf_tx_port != NULL) && (s_profile->rf_tx_pin != PIN_NONE)) {
-        gpio_write(s_profile->rf_tx_port, s_profile->rf_tx_pin, !tx_on);
+        gpio_write(s_profile->rf_tx_port, s_profile->rf_tx_pin, rf_tx);
     }
     if ((s_profile->rf_rx_port != NULL) && (s_profile->rf_rx_pin != PIN_NONE)) {
-        gpio_write(s_profile->rf_rx_port, s_profile->rf_rx_pin, true);
+        gpio_write(s_profile->rf_rx_port, s_profile->rf_rx_pin, rf_rx);
     }
+#else
+    (void)tx_on;
 #endif
 }
 
@@ -780,12 +811,24 @@ static void radio_start_rx_continuous(void)
 static bool radio_start_tx(const uint8_t *data, uint16_t len)
 {
     uint8_t tx_len;
+    uint8_t tx_variant;
+    uint8_t pa_cfg;
 
     if ((data == NULL) || (len == 0U) || (len > 255U)) {
         return false;
     }
 
     tx_len = (uint8_t)len;
+    tx_variant = (uint8_t)(s_tx_variant % RADIO_TX_VARIANT_COUNT);
+    s_dbg_last_tx_variant = tx_variant;
+
+    /*
+     * PA fallback:
+     * - variant 0/1: PA_BOOST-like config (legacy behavior)
+     * - variant 2/3: RFO-like config
+     */
+    pa_cfg = ((tx_variant & 0x02U) == 0U) ? 0x8CU : 0x7FU;
+    radio_write_reg(SX127X_REG_PA_CONFIG, pa_cfg);
 
     radio_set_rf_switch(true);
     radio_write_reg(SX127X_REG_OPMODE, SX127X_OPMODE_LONG_RANGE | SX127X_OPMODE_STDBY);
@@ -796,6 +839,7 @@ static bool radio_start_tx(const uint8_t *data, uint16_t len)
     radio_write_reg(SX127X_REG_OPMODE, SX127X_OPMODE_LONG_RANGE | SX127X_OPMODE_TX);
     s_radio_state = RADIO_STATE_TX;
     s_tx_start_ms = s_now_ms;
+    s_tx_variant = (uint8_t)((tx_variant + 1U) % RADIO_TX_VARIANT_COUNT);
     return true;
 }
 
@@ -839,6 +883,8 @@ bool platform_radio_init(platform_radio_rx_cb_t cb)
     s_dbg_hard_reset_count = 0U;
     s_dbg_last_irq_flags = 0U;
     s_dbg_last_opmode = 0U;
+    s_dbg_last_tx_variant = 0U;
+    s_tx_variant = 0U;
 
     debug_port_enable_swd_only();
     if (!radio_detect()) {
@@ -1073,6 +1119,11 @@ uint8_t platform_radio_dbg_last_irq_flags(void)
 uint8_t platform_radio_dbg_last_opmode(void)
 {
     return s_dbg_last_opmode;
+}
+
+uint8_t platform_radio_dbg_tx_variant(void)
+{
+    return s_dbg_last_tx_variant;
 }
 
 void platform_led_set(led_state_t state)

@@ -36,17 +36,25 @@
 #define APP_JOIN_TABLE_SIZE    16U
 #define APP_JOIN_FIRST_ID      2U
 #define APP_JOIN_LAST_ID       250U
+#define APP_JOIN_UID_LEN       12U
+#define APP_JOIN_REQ_PAYLOAD_LEN  (2U + APP_JOIN_UID_LEN)
+#define APP_JOIN_ACK_BASE_LEN  6U
+#define APP_JOIN_ACK_PAYLOAD_LEN  (APP_JOIN_ACK_BASE_LEN + APP_JOIN_UID_LEN)
 #define APP_JOIN_ACK_REPEAT    3U
 #define APP_JOIN_ACK_DELAY_MS  120U
 #define APP_JOIN_ACK_GAP_MS    120U
 #define APP_NODE_OFFLINE_MS    30000U
 #define APP_ACK_TIMEOUT_MS     700U
 #define APP_ACK_MAX_RETRIES    3U
+#define APP_ACK_BURST_REPEAT   2U
+#define APP_ACK_BURST_DELAY_MS 80U
+#define APP_ACK_BURST_GAP_MS   80U
 /* 2 = USART2 (PA2/PA3, usually ST-LINK VCP), 1 = USART1 (PB6/PB7) */
 #define APP_CONSOLE_UART       2U
 #define APP_UART_MIRROR_BOTH   1U
 #define APP_UART_ECHO          0U
-#define APP_UART_AUTOSUBMIT_MS 180U
+#define APP_UART_AUTOSUBMIT_MS 900U
+#define APP_UART_RX_RING_SIZE  256U
 
 typedef enum
 {
@@ -76,7 +84,10 @@ typedef struct
 {
     uint8_t used;
     uint16_t nonce;
+    uint8_t uid_valid;
+    uint8_t uid[APP_JOIN_UID_LEN];
     uint16_t node_id;
+    uint16_t parent_id;
     uint32_t last_seen_ms;
     uint8_t online;
 } app_join_entry_t;
@@ -100,19 +111,32 @@ typedef struct
 
 typedef struct
 {
-    uint8_t used;
-    uint16_t src_id;
-    uint16_t seq;
-} app_relay_track_t;
+    uint8_t active;
+    uint16_t nonce;
+    uint8_t uid_valid;
+    uint8_t uid[APP_JOIN_UID_LEN];
+    uint16_t assigned_id;
+    uint16_t parent_id;
+    uint8_t repeats_left;
+    uint32_t next_tx_ms;
+} app_join_ack_burst_t;
 
 typedef struct
 {
     uint8_t active;
-    uint16_t nonce;
-    uint16_t assigned_id;
+    uint16_t dst_id;
+    uint16_t seq;
     uint8_t repeats_left;
     uint32_t next_tx_ms;
-} app_join_ack_burst_t;
+} app_ack_burst_t;
+
+typedef struct
+{
+    volatile uint16_t head;
+    volatile uint16_t tail;
+    volatile uint32_t overflow_count;
+    uint8_t data[APP_UART_RX_RING_SIZE];
+} app_uart_ring_t;
 
 static UART_HandleTypeDef huart1;
 static UART_HandleTypeDef huart2;
@@ -142,17 +166,21 @@ static uint8_t tx_queue_count = 0U;
 
 static app_pending_ack_t pending_ack;
 static app_join_ack_burst_t pending_join_ack;
-static app_relay_track_t relay_track[APP_RELAY_TRACK_SIZE];
+static app_ack_burst_t pending_ack_burst;
 static app_join_entry_t join_table[APP_JOIN_TABLE_SIZE];
 static uint16_t next_assigned_id = APP_JOIN_FIRST_ID;
+static uint16_t chain_tail_id = APP_COORDINATOR_ID;
 static uint16_t next_seq = 1U;
 static uint16_t default_dst_id = APP_BROADCAST_ID;
 static uint8_t uart_rx_seen = 0U;
 static uint32_t uart_last_rx_char_ms = 0U;
+static uint8_t uart_last_read_src = 0U;
+static app_uart_ring_t uart1_rx_ring;
+static app_uart_ring_t uart2_rx_ring;
 
 static char uart_line[APP_UART_LINE_MAX];
 static uint8_t uart_line_len = 0U;
-static uint8_t relay_track_insert_idx = 0U;
+static uint8_t uart_line_src = 0U; /* 0=none, 1=USART1, 2=USART2 */
 
 static uint32_t stat_rx_total = 0U;
 static uint32_t stat_tx_started = 0U;
@@ -183,14 +211,19 @@ static void OnRxError(void);
 
 static void Uart_TransmitAll(const uint8_t *buf, uint16_t len);
 static void Uart_Log(const char *msg);
-static void Uart_LogText(const uint8_t *data, uint16_t size);
 static void Uart_Logf(const char *fmt, ...);
 static void Uart_LogTimedf(const char *fmt, ...);
 static uint8_t Uart_TryReadChar(char *out_char);
 static uint8_t Uart_TryReadFrom(UART_HandleTypeDef *huart, char *out_char);
+static void Uart_RingReset(app_uart_ring_t *ring);
+static void Uart_RingPush(app_uart_ring_t *ring, uint8_t value);
+static uint8_t Uart_RingPop(app_uart_ring_t *ring, char *out_char);
+static void Uart_IrqDrain(UART_HandleTypeDef *huart, app_uart_ring_t *ring);
 
 static char *SkipSpaces(char *p);
 static uint8_t ParseU16(char **cursor, uint16_t *out_value);
+static uint8_t App_UidIsValid(const uint8_t *uid);
+static uint8_t App_UidEqual(const uint8_t *a, const uint8_t *b);
 
 static uint8_t App_SerializeFrame(const app_frame_t *frame, uint8_t *out, uint8_t out_max);
 static uint8_t App_ParseFrame(app_frame_t *frame, const uint8_t *raw, uint16_t raw_len);
@@ -204,11 +237,13 @@ static uint8_t App_QueueFrame(const app_frame_t *frame);
 
 static uint8_t App_JoinIdInUse(uint16_t node_id);
 static uint16_t App_JoinAllocateId(void);
-static uint16_t App_JoinFindOrAssign(uint16_t nonce);
+static uint16_t App_JoinFindOrAssign(uint16_t nonce,
+                                     const uint8_t *join_uid,
+                                     uint8_t join_uid_valid,
+                                     uint16_t *out_parent_id,
+                                     uint8_t *out_is_new);
 static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms);
 static void App_CheckNodeDisconnects(uint32_t now_ms);
-static uint8_t App_RelayIsDuplicate(uint16_t src_id, uint16_t seq);
-static void App_RelayRemember(uint16_t src_id, uint16_t seq);
 static void App_RelayFrame(const app_frame_t *frame);
 static void App_PrintNodes(void);
 static void App_PrintStatus(void);
@@ -216,10 +251,18 @@ static void App_PrintStatus(void);
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms);
 static void App_ProcessPendingAck(uint32_t now_ms);
 static void App_ProcessAckFrame(const app_frame_t *frame);
-static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint32_t now_ms);
+static void App_ScheduleJoinAck(uint16_t nonce,
+                                const uint8_t *join_uid,
+                                uint8_t join_uid_valid,
+                                uint16_t assigned_id,
+                                uint16_t parent_id,
+                                uint32_t now_ms);
 static void App_ProcessJoinAckBurst(uint32_t now_ms);
+static void App_ScheduleAckBurst(uint16_t dst_id, uint16_t seq, uint32_t now_ms);
+static void App_ProcessAckBurst(uint32_t now_ms);
 
 static void App_HandleJoinReq(const app_frame_t *frame);
+static void App_HandleHeartbeat(const app_frame_t *frame);
 static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr);
 static void App_HandleFrame(const app_frame_t *frame, int16_t rssi, int8_t snr);
 static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr);
@@ -243,19 +286,21 @@ int main(void)
 
     memset(&pending_ack, 0, sizeof(pending_ack));
     memset(&pending_join_ack, 0, sizeof(pending_join_ack));
-    memset(relay_track, 0, sizeof(relay_track));
+    memset(&pending_ack_burst, 0, sizeof(pending_ack_burst));
     memset(join_table, 0, sizeof(join_table));
-    relay_track_insert_idx = 0U;
+    chain_tail_id = APP_COORDINATOR_ID;
 
     Uart_Log("BOOT LORAPROJET\r\n");
     Uart_Log("MODE: CARD1 COORDINATOR (LORAE5)\r\n");
     Uart_Log("IRQ MODE: HYBRID_ISR_POLL\r\n");
+    Uart_Log("ACK BURST: ON\r\n");
     Uart_Log("BUILD: " __DATE__ " " __TIME__ "\r\n");
 #if (APP_CONSOLE_UART == 2U)
     Uart_Log("UART CONSOLE: USART2 (PA2/PA3)\r\n");
 #else
     Uart_Log("UART CONSOLE: USART1 (PB6/PB7)\r\n");
 #endif
+    Uart_Log("UART RX MODE: IRQ_RING + PER_LINE_SOURCE\r\n");
     Uart_Log("RFSW PROFILE ID: " STR(RBI_RF_SW_PROFILE) "\r\n");
 #if (RBI_RF_SW_PROFILE == RBI_RF_SW_PROFILE_WYRES_REVC)
     Uart_Log("RFSW PROFILE: WYRES_REVC\r\n");
@@ -263,6 +308,8 @@ int main(void)
     Uart_Log("RFSW PROFILE: LORAE5\r\n");
 #endif
     Uart_Log("COORDINATOR NODE ID: 1\r\n");
+    Uart_Logf("PRESENCE OFFLINE THRESHOLD: %lu ms\r\n",
+              (unsigned long)APP_NODE_OFFLINE_MS);
     Uart_Log("SERIAL: type text + Enter (or short pause) to send on LoRa\r\n");
     Uart_Log("SERIAL: commands available via help\r\n");
 
@@ -344,6 +391,7 @@ int main(void)
         App_ProcessPendingAck(now_ms);
         App_CheckNodeDisconnects(now_ms);
         App_ProcessJoinAckBurst(now_ms);
+        App_ProcessAckBurst(now_ms);
         App_TxPump();
     }
 }
@@ -392,6 +440,51 @@ static uint8_t ParseU16(char **cursor, uint16_t *out_value)
 
     *out_value = (uint16_t)value;
     *cursor = p;
+    return 1U;
+}
+
+static uint8_t App_UidIsValid(const uint8_t *uid)
+{
+    uint8_t i;
+    uint8_t all_zero = 1U;
+    uint8_t all_ff = 1U;
+
+    if (uid == NULL)
+    {
+        return 0U;
+    }
+
+    for (i = 0U; i < APP_JOIN_UID_LEN; i++)
+    {
+        if (uid[i] != 0x00U)
+        {
+            all_zero = 0U;
+        }
+        if (uid[i] != 0xFFU)
+        {
+            all_ff = 0U;
+        }
+    }
+
+    return (uint8_t)((all_zero == 0U) && (all_ff == 0U));
+}
+
+static uint8_t App_UidEqual(const uint8_t *a, const uint8_t *b)
+{
+    uint8_t i;
+
+    if ((a == NULL) || (b == NULL))
+    {
+        return 0U;
+    }
+
+    for (i = 0U; i < APP_JOIN_UID_LEN; i++)
+    {
+        if (a[i] != b[i])
+        {
+            return 0U;
+        }
+    }
     return 1U;
 }
 
@@ -645,26 +738,66 @@ static uint16_t App_JoinAllocateId(void)
     return APP_NODE_UNASSIGNED;
 }
 
-static uint16_t App_JoinFindOrAssign(uint16_t nonce)
+static uint16_t App_JoinFindOrAssign(uint16_t nonce,
+                                     const uint8_t *join_uid,
+                                     uint8_t join_uid_valid,
+                                     uint16_t *out_parent_id,
+                                     uint8_t *out_is_new)
 {
     uint8_t i;
     int8_t free_idx = -1;
     uint16_t id;
+    uint16_t parent_id = APP_COORDINATOR_ID;
     uint32_t now_ms = HAL_GetTick();
+
+    if (out_parent_id != NULL)
+    {
+        *out_parent_id = APP_COORDINATOR_ID;
+    }
+    if (out_is_new != NULL)
+    {
+        *out_is_new = 0U;
+    }
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
     {
         if (join_table[i].used)
         {
-            if (join_table[i].nonce == nonce)
+            uint8_t same_identity = 0U;
+
+            if (join_uid_valid != 0U)
             {
-                if (join_table[i].online == 0U)
+                if ((join_table[i].uid_valid != 0U) &&
+                    App_UidEqual(join_table[i].uid, join_uid))
                 {
-                    Uart_LogTimedf("INFO: node %u reconnected\r\n",
-                                   (unsigned)join_table[i].node_id);
+                    same_identity = 1U;
                 }
-                join_table[i].last_seen_ms = now_ms;
-                join_table[i].online = 1U;
+                else if ((join_table[i].uid_valid == 0U) &&
+                         (join_table[i].nonce == nonce))
+                {
+                    /* Upgrade legacy nonce-only slot once UID is known. */
+                    join_table[i].uid_valid = 1U;
+                    memcpy(join_table[i].uid, join_uid, APP_JOIN_UID_LEN);
+                    same_identity = 1U;
+                }
+            }
+            else if ((join_table[i].uid_valid == 0U) && (join_table[i].nonce == nonce))
+            {
+                same_identity = 1U;
+            }
+
+            if (same_identity != 0U)
+            {
+                join_table[i].nonce = nonce;
+                App_MarkNodeSeen(join_table[i].node_id, now_ms);
+                if (join_table[i].parent_id != APP_NODE_UNASSIGNED)
+                {
+                    parent_id = join_table[i].parent_id;
+                }
+                if (out_parent_id != NULL)
+                {
+                    *out_parent_id = parent_id;
+                }
                 return join_table[i].node_id;
             }
         }
@@ -685,17 +818,46 @@ static uint16_t App_JoinFindOrAssign(uint16_t nonce)
         return APP_NODE_UNASSIGNED;
     }
 
+    if ((chain_tail_id == APP_NODE_UNASSIGNED) || (chain_tail_id == APP_BROADCAST_ID))
+    {
+        chain_tail_id = APP_COORDINATOR_ID;
+    }
+    parent_id = chain_tail_id;
+
     join_table[(uint8_t)free_idx].used = 1U;
     join_table[(uint8_t)free_idx].nonce = nonce;
+    join_table[(uint8_t)free_idx].uid_valid = join_uid_valid;
+    if (join_uid_valid != 0U)
+    {
+        memcpy(join_table[(uint8_t)free_idx].uid, join_uid, APP_JOIN_UID_LEN);
+    }
+    else
+    {
+        memset(join_table[(uint8_t)free_idx].uid, 0, APP_JOIN_UID_LEN);
+    }
     join_table[(uint8_t)free_idx].node_id = id;
+    join_table[(uint8_t)free_idx].parent_id = parent_id;
     join_table[(uint8_t)free_idx].last_seen_ms = now_ms;
     join_table[(uint8_t)free_idx].online = 1U;
+    chain_tail_id = id;
+    if (out_parent_id != NULL)
+    {
+        *out_parent_id = parent_id;
+    }
+    if (out_is_new != NULL)
+    {
+        *out_is_new = 1U;
+    }
     return id;
 }
 
 static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
 {
     uint8_t i;
+    uint8_t found = 0U;
+    uint8_t was_online = 0U;
+    uint8_t stale_seen_while_online = 0U;
+    int8_t free_idx = -1;
 
     if ((node_id == APP_NODE_UNASSIGNED) ||
         (node_id == APP_BROADCAST_ID) ||
@@ -708,114 +870,187 @@ static void App_MarkNodeSeen(uint16_t node_id, uint32_t now_ms)
     {
         if (join_table[i].used && (join_table[i].node_id == node_id))
         {
-            if (join_table[i].online == 0U)
+            found = 1U;
+            if (join_table[i].online != 0U)
             {
-                Uart_LogTimedf("INFO: node %u reconnected\r\n", (unsigned)node_id);
+                was_online = 1U;
+                if ((now_ms >= join_table[i].last_seen_ms) &&
+                    ((now_ms - join_table[i].last_seen_ms) >= APP_NODE_OFFLINE_MS))
+                {
+                    stale_seen_while_online = 1U;
+                }
             }
             join_table[i].last_seen_ms = now_ms;
             join_table[i].online = 1U;
-            return;
         }
+        else if ((!join_table[i].used) && (free_idx < 0))
+        {
+            free_idx = (int8_t)i;
+        }
+    }
+
+    if ((found == 0U) && (free_idx >= 0))
+    {
+        uint8_t idx = (uint8_t)free_idx;
+        uint16_t parent_id = APP_COORDINATOR_ID;
+
+        if (node_id > APP_COORDINATOR_ID)
+        {
+            parent_id = (uint16_t)(node_id - 1U);
+        }
+        if ((parent_id == APP_NODE_UNASSIGNED) ||
+            (parent_id == APP_BROADCAST_ID) ||
+            (parent_id == node_id))
+        {
+            parent_id = APP_COORDINATOR_ID;
+        }
+
+        join_table[idx].used = 1U;
+        join_table[idx].nonce = 0U;
+        join_table[idx].uid_valid = 0U;
+        memset(join_table[idx].uid, 0, APP_JOIN_UID_LEN);
+        join_table[idx].node_id = node_id;
+        join_table[idx].parent_id = parent_id;
+        join_table[idx].last_seen_ms = now_ms;
+        join_table[idx].online = 1U;
+
+        if ((node_id >= APP_JOIN_FIRST_ID) &&
+            (node_id <= APP_JOIN_LAST_ID) &&
+            (node_id >= next_assigned_id))
+        {
+            next_assigned_id = (uint16_t)(node_id + 1U);
+            if (next_assigned_id > APP_JOIN_LAST_ID)
+            {
+                next_assigned_id = APP_JOIN_FIRST_ID;
+            }
+        }
+        if ((chain_tail_id == APP_NODE_UNASSIGNED) || (node_id > chain_tail_id))
+        {
+            chain_tail_id = node_id;
+        }
+
+        Uart_LogTimedf("INFO: learned node %u from relayed traffic\r\n", (unsigned)node_id);
+        if (parent_id != APP_COORDINATOR_ID)
+        {
+            /*
+             * In linear chain mode, seeing node N relayed implies predecessor N-1
+             * is currently part of the active path. Ensure parent is visible too.
+             */
+            App_MarkNodeSeen(parent_id, now_ms);
+        }
+        return;
+    }
+
+    /*
+     * Safety net:
+     * if a long silence is observed while node was still marked online,
+     * emit the disconnect event before the reconnect event.
+     */
+    if ((found != 0U) && (stale_seen_while_online != 0U))
+    {
+        Uart_LogTimedf("WARN: node %u disconnected\r\n", (unsigned)node_id);
+    }
+
+    if ((found != 0U) && ((was_online == 0U) || (stale_seen_while_online != 0U)))
+    {
+        Uart_LogTimedf("INFO: node %u reconnected\r\n", (unsigned)node_id);
     }
 }
 
 static void App_CheckNodeDisconnects(uint32_t now_ms)
 {
     uint8_t i;
+    uint8_t j;
 
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
     {
-        if (!join_table[i].used || (join_table[i].online == 0U))
+        uint16_t node_id;
+        uint32_t latest_seen_ms = 0U;
+        uint8_t any_online = 0U;
+        uint8_t already_processed = 0U;
+
+        if (!join_table[i].used)
         {
             continue;
         }
 
-        if ((now_ms - join_table[i].last_seen_ms) >= APP_NODE_OFFLINE_MS)
+        node_id = join_table[i].node_id;
+        if ((node_id == APP_NODE_UNASSIGNED) ||
+            (node_id == APP_BROADCAST_ID) ||
+            (node_id == APP_COORDINATOR_ID))
         {
-            join_table[i].online = 0U;
-            Uart_LogTimedf("WARN: node %u disconnected\r\n",
-                           (unsigned)join_table[i].node_id);
+            continue;
         }
-    }
-}
 
-static uint8_t App_RelayIsDuplicate(uint16_t src_id, uint16_t seq)
-{
-    uint8_t i;
-
-    for (i = 0U; i < APP_RELAY_TRACK_SIZE; i++)
-    {
-        if (relay_track[i].used &&
-            (relay_track[i].src_id == src_id) &&
-            (relay_track[i].seq == seq))
+        for (j = 0U; j < i; j++)
         {
-            return 1U;
+            if (join_table[j].used && (join_table[j].node_id == node_id))
+            {
+                already_processed = 1U;
+                break;
+            }
         }
-    }
+        if (already_processed != 0U)
+        {
+            continue;
+        }
 
-    return 0U;
-}
+        for (j = 0U; j < APP_JOIN_TABLE_SIZE; j++)
+        {
+            if (!join_table[j].used || (join_table[j].node_id != node_id))
+            {
+                continue;
+            }
 
-static void App_RelayRemember(uint16_t src_id, uint16_t seq)
-{
-    app_relay_track_t *slot = &relay_track[relay_track_insert_idx];
+            if (join_table[j].online != 0U)
+            {
+                any_online = 1U;
+            }
 
-    slot->used = 1U;
-    slot->src_id = src_id;
-    slot->seq = seq;
-    relay_track_insert_idx++;
-    if (relay_track_insert_idx >= APP_RELAY_TRACK_SIZE)
-    {
-        relay_track_insert_idx = 0U;
+            if ((latest_seen_ms == 0U) || (join_table[j].last_seen_ms > latest_seen_ms))
+            {
+                latest_seen_ms = join_table[j].last_seen_ms;
+            }
+        }
+
+        if ((any_online == 0U) || (latest_seen_ms == 0U))
+        {
+            continue;
+        }
+
+        /* Guard against incoherent future timestamps (underflow would look like huge age). */
+        if (latest_seen_ms > now_ms)
+        {
+            latest_seen_ms = now_ms;
+        }
+
+        if ((now_ms - latest_seen_ms) >= APP_NODE_OFFLINE_MS)
+        {
+            for (j = 0U; j < APP_JOIN_TABLE_SIZE; j++)
+            {
+                if (join_table[j].used && (join_table[j].node_id == node_id))
+                {
+                    join_table[j].online = 0U;
+                    join_table[j].last_seen_ms = latest_seen_ms;
+                }
+            }
+            Uart_LogTimedf("WARN: node %u disconnected\r\n", (unsigned)node_id);
+        }
     }
 }
 
 static void App_RelayFrame(const app_frame_t *frame)
 {
-    app_frame_t relay;
-
     if (frame == NULL)
     {
         return;
     }
 
-    if (frame->ttl == 0U)
-    {
-        return;
-    }
-
-    if (frame->dst_id == APP_COORDINATOR_ID)
-    {
-        return;
-    }
-
-    if (frame->dst_id == APP_BROADCAST_ID)
-    {
-        return;
-    }
-
-    /* Anti-loop: never relay a frame that originated from this coordinator. */
-    if (frame->src_id == APP_COORDINATOR_ID)
-    {
-        return;
-    }
-
-    if (App_RelayIsDuplicate(frame->src_id, frame->seq))
-    {
-        return;
-    }
-
-    relay = *frame;
-    relay.ttl--;
-    if (App_QueueFrame(&relay))
-    {
-        App_RelayRemember(frame->src_id, frame->seq);
-        Uart_LogTimedf("RELAY src=%u dst=%u seq=%u ttl=%u\r\n",
-                       (unsigned)frame->src_id,
-                       (unsigned)frame->dst_id,
-                       (unsigned)frame->seq,
-                       (unsigned)relay.ttl);
-    }
+    /*
+     * Linear topology: coordinator is chain endpoint and does not relay unicast
+     * traffic between nodes.
+     */
+    (void)frame;
 }
 
 static void App_PrintNodes(void)
@@ -823,6 +1058,7 @@ static void App_PrintNodes(void)
     uint8_t i;
     uint8_t found = 0U;
     uint32_t now_ms = HAL_GetTick();
+    uint32_t age_ms;
 
     Uart_Log("Known nodes: ");
     for (i = 0U; i < APP_JOIN_TABLE_SIZE; i++)
@@ -830,11 +1066,20 @@ static void App_PrintNodes(void)
         if (join_table[i].used)
         {
             found = 1U;
-            Uart_Logf("[id=%u nonce=%u state=%s ageMs=%lu] ",
+            if (join_table[i].last_seen_ms <= now_ms)
+            {
+                age_ms = now_ms - join_table[i].last_seen_ms;
+            }
+            else
+            {
+                age_ms = 0U;
+            }
+            Uart_Logf("[id=%u parent=%u nonce=%u state=%s ageMs=%lu] ",
                       (unsigned)join_table[i].node_id,
+                      (unsigned)join_table[i].parent_id,
                       (unsigned)join_table[i].nonce,
                       (join_table[i].online != 0U) ? "online" : "offline",
-                      (unsigned long)(now_ms - join_table[i].last_seen_ms));
+                      (unsigned long)age_ms);
         }
     }
     if (found == 0U)
@@ -864,12 +1109,20 @@ static void App_PrintStatus(void)
               (unsigned long)stat_ack_rx,
               (unsigned long)stat_ack_timeout,
               (unsigned long)stat_retry);
-    Uart_Logf("STATUS queue=%u pendingAck=%u pendingJoinAck=%u txPending=%u radioSt=%u\r\n",
+    Uart_Logf("STATUS queue=%u pendingAck=%u pendingAckBurst=%u pendingJoinAck=%u txPending=%u radioSt=%u\r\n",
               (unsigned)tx_queue_count,
               (unsigned)pending_ack.active,
+              (unsigned)pending_ack_burst.active,
               (unsigned)pending_join_ack.active,
               (unsigned)tx_pending,
               (unsigned)st);
+    Uart_Logf("STATUS uartLineSrc=%u uart1Ov=%lu uart2Ov=%lu\r\n",
+              (unsigned)uart_line_src,
+              (unsigned long)uart1_rx_ring.overflow_count,
+              (unsigned long)uart2_rx_ring.overflow_count);
+    Uart_Logf("STATUS chainTail=%u defaultDst=%u\r\n",
+              (unsigned)chain_tail_id,
+              (unsigned)default_dst_id);
 }
 
 static void App_StartPendingAck(uint16_t dst_id, uint16_t seq, const uint8_t *raw, uint8_t raw_len, uint32_t now_ms)
@@ -945,11 +1198,26 @@ static void App_ProcessAckFrame(const app_frame_t *frame)
     }
 }
 
-static void App_ScheduleJoinAck(uint16_t nonce, uint16_t assigned_id, uint32_t now_ms)
+static void App_ScheduleJoinAck(uint16_t nonce,
+                                const uint8_t *join_uid,
+                                uint8_t join_uid_valid,
+                                uint16_t assigned_id,
+                                uint16_t parent_id,
+                                uint32_t now_ms)
 {
     pending_join_ack.active = 1U;
     pending_join_ack.nonce = nonce;
+    pending_join_ack.uid_valid = join_uid_valid;
+    if ((join_uid_valid != 0U) && (join_uid != NULL))
+    {
+        memcpy(pending_join_ack.uid, join_uid, APP_JOIN_UID_LEN);
+    }
+    else
+    {
+        memset(pending_join_ack.uid, 0, APP_JOIN_UID_LEN);
+    }
     pending_join_ack.assigned_id = assigned_id;
+    pending_join_ack.parent_id = parent_id;
     pending_join_ack.repeats_left = APP_JOIN_ACK_REPEAT;
     pending_join_ack.next_tx_ms = now_ms + APP_JOIN_ACK_DELAY_MS;
 }
@@ -969,11 +1237,18 @@ static void App_ProcessJoinAckBurst(uint32_t now_ms)
     }
 
     App_InitFrame(&reply, APP_MSG_JOIN_ACK, APP_COORDINATOR_ID, APP_BROADCAST_ID, next_seq++);
-    reply.payload_len = 4U;
+    reply.payload_len = APP_JOIN_ACK_BASE_LEN;
     reply.payload[0] = (uint8_t)(pending_join_ack.nonce & 0xFFU);
     reply.payload[1] = (uint8_t)((pending_join_ack.nonce >> 8) & 0xFFU);
     reply.payload[2] = (uint8_t)(pending_join_ack.assigned_id & 0xFFU);
     reply.payload[3] = (uint8_t)((pending_join_ack.assigned_id >> 8) & 0xFFU);
+    reply.payload[4] = (uint8_t)(pending_join_ack.parent_id & 0xFFU);
+    reply.payload[5] = (uint8_t)((pending_join_ack.parent_id >> 8) & 0xFFU);
+    if (pending_join_ack.uid_valid != 0U)
+    {
+        memcpy(&reply.payload[APP_JOIN_ACK_BASE_LEN], pending_join_ack.uid, APP_JOIN_UID_LEN);
+        reply.payload_len = APP_JOIN_ACK_PAYLOAD_LEN;
+    }
 
     if (!App_QueueFrame(&reply))
     {
@@ -993,13 +1268,61 @@ static void App_ProcessJoinAckBurst(uint32_t now_ms)
     }
 }
 
+static void App_ScheduleAckBurst(uint16_t dst_id, uint16_t seq, uint32_t now_ms)
+{
+    pending_ack_burst.active = 1U;
+    pending_ack_burst.dst_id = dst_id;
+    pending_ack_burst.seq = seq;
+    pending_ack_burst.repeats_left = APP_ACK_BURST_REPEAT;
+    pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_DELAY_MS;
+}
+
+static void App_ProcessAckBurst(uint32_t now_ms)
+{
+    app_frame_t ack;
+
+    if (pending_ack_burst.active == 0U)
+    {
+        return;
+    }
+
+    if ((int32_t)(now_ms - pending_ack_burst.next_tx_ms) < 0)
+    {
+        return;
+    }
+
+    App_InitFrame(&ack, APP_MSG_ACK, APP_COORDINATOR_ID, pending_ack_burst.dst_id, pending_ack_burst.seq);
+    ack.payload_len = 0U;
+
+    if (!App_QueueFrame(&ack))
+    {
+        pending_ack_burst.next_tx_ms = now_ms + 30U;
+        return;
+    }
+
+    stat_ack_tx++;
+    pending_ack_burst.repeats_left--;
+    if (pending_ack_burst.repeats_left == 0U)
+    {
+        pending_ack_burst.active = 0U;
+    }
+    else
+    {
+        pending_ack_burst.next_tx_ms = now_ms + APP_ACK_BURST_GAP_MS;
+    }
+}
+
 static void App_HandleJoinReq(const app_frame_t *frame)
 {
     uint16_t nonce;
     uint16_t assigned_id;
+    uint16_t parent_id;
+    uint8_t join_uid[APP_JOIN_UID_LEN];
+    uint8_t join_uid_valid;
+    uint8_t is_new_join;
     uint32_t now_ms;
 
-    if ((frame == NULL) || (frame->payload_len < 2U))
+    if ((frame == NULL) || (frame->payload_len < APP_JOIN_REQ_PAYLOAD_LEN))
     {
         return;
     }
@@ -1010,7 +1333,16 @@ static void App_HandleJoinReq(const app_frame_t *frame)
     }
 
     nonce = (uint16_t)frame->payload[0] | ((uint16_t)frame->payload[1] << 8);
-    assigned_id = App_JoinFindOrAssign(nonce);
+    memcpy(join_uid, &frame->payload[2], APP_JOIN_UID_LEN);
+    join_uid_valid = App_UidIsValid(join_uid);
+    if (join_uid_valid == 0U)
+    {
+        Uart_LogTimedf("JOIN_REQ ignored invalid uid from src=%u\r\n",
+                       (unsigned)frame->src_id);
+        return;
+    }
+
+    assigned_id = App_JoinFindOrAssign(nonce, join_uid, join_uid_valid, &parent_id, &is_new_join);
     if (assigned_id == APP_NODE_UNASSIGNED)
     {
         return;
@@ -1022,16 +1354,22 @@ static void App_HandleJoinReq(const app_frame_t *frame)
                    (unsigned)nonce);
 
     now_ms = HAL_GetTick();
-    App_ScheduleJoinAck(nonce, assigned_id, now_ms);
-    Uart_LogTimedf("JOIN_ACK scheduled nonce=%u -> id=%u x%u\r\n",
+    App_ScheduleJoinAck(nonce, join_uid, join_uid_valid, assigned_id, parent_id, now_ms);
+    if (is_new_join != 0U)
+    {
+        default_dst_id = assigned_id;
+    }
+    Uart_LogTimedf("JOIN_ACK scheduled nonce=%u -> id=%u parent=%u x%u\r\n",
                    (unsigned)nonce,
                    (unsigned)assigned_id,
+                   (unsigned)parent_id,
                    (unsigned)APP_JOIN_ACK_REPEAT);
 }
 
 static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr)
 {
     app_frame_t ack;
+    uint32_t now_ms;
 
     if (frame == NULL)
     {
@@ -1070,12 +1408,43 @@ static void App_HandleText(const app_frame_t *frame, int16_t rssi, int8_t snr)
 
     if ((frame->dst_id != APP_BROADCAST_ID) && (frame->src_id != APP_NODE_UNASSIGNED))
     {
+        now_ms = HAL_GetTick();
         App_InitFrame(&ack, APP_MSG_ACK, APP_COORDINATOR_ID, frame->src_id, frame->seq);
         if (App_QueueFrame(&ack))
         {
             stat_ack_tx++;
         }
+        App_ScheduleAckBurst(frame->src_id, frame->seq, now_ms);
     }
+}
+
+static void App_HandleHeartbeat(const app_frame_t *frame)
+{
+    app_frame_t ack;
+    uint32_t now_ms;
+
+    if (frame == NULL)
+    {
+        return;
+    }
+
+    if ((frame->dst_id != APP_COORDINATOR_ID) && (frame->dst_id != APP_BROADCAST_ID))
+    {
+        return;
+    }
+
+    if (frame->src_id == APP_NODE_UNASSIGNED)
+    {
+        return;
+    }
+
+    now_ms = HAL_GetTick();
+    App_InitFrame(&ack, APP_MSG_ACK, APP_COORDINATOR_ID, frame->src_id, frame->seq);
+    if (App_QueueFrame(&ack))
+    {
+        stat_ack_tx++;
+    }
+    App_ScheduleAckBurst(frame->src_id, frame->seq, now_ms);
 }
 
 static void App_HandleFrame(const app_frame_t *frame, int16_t rssi, int8_t snr)
@@ -1100,7 +1469,7 @@ static void App_HandleFrame(const app_frame_t *frame, int16_t rssi, int8_t snr)
         break;
 
     case APP_MSG_HEARTBEAT:
-        /* Presence is tracked from src_id in App_HandleRxRaw. */
+        App_HandleHeartbeat(frame);
         break;
 
     default:
@@ -1111,15 +1480,13 @@ static void App_HandleFrame(const app_frame_t *frame, int16_t rssi, int8_t snr)
 static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int8_t snr)
 {
     app_frame_t frame;
+    uint32_t now_ms;
 
     stat_rx_total++;
 
     if (!App_ParseFrame(&frame, data, len))
     {
         stat_parse_err++;
-        Uart_Log("RX RAW: ");
-        Uart_LogText(data, len);
-        Uart_Log("\r\n");
         return;
     }
 
@@ -1129,7 +1496,13 @@ static void App_HandleRxRaw(const uint8_t *data, uint16_t len, int16_t rssi, int
         return;
     }
 
-    App_MarkNodeSeen(frame.src_id, HAL_GetTick());
+    now_ms = HAL_GetTick();
+    /*
+     * Evaluate offline timeouts before marking the current frame source as seen.
+     * This guarantees proper disconnect/reconnect ordering even on edge timings.
+     */
+    App_CheckNodeDisconnects(now_ms);
+    App_MarkNodeSeen(frame.src_id, now_ms);
     App_RelayFrame(&frame);
     App_HandleFrame(&frame, rssi, snr);
 }
@@ -1212,7 +1585,7 @@ static void App_PrintHelp(void)
     Uart_Log("  send <id> <text>    -> send reliable text (ACK/retry)\r\n");
     Uart_Log("  broadcast <text>    -> send broadcast text\r\n");
     Uart_Log("  help                -> show this help\r\n");
-    Uart_Log("  <text>              -> send to default destination\r\n");
+    Uart_Log("  <text>              -> send to default destination (auto = last joined node)\r\n");
     Uart_Log("Note: lines auto-submit after a short pause.\r\n");
 }
 
@@ -1229,6 +1602,7 @@ static void App_HandleUartLine(char *line, uint32_t now_ms)
     cursor = SkipSpaces(line);
     if (*cursor == '\0')
     {
+        App_PrintHelp();
         return;
     }
 
@@ -1318,9 +1692,11 @@ static void App_HandleUartLine(char *line, uint32_t now_ms)
 static void App_PollUart(uint32_t now_ms)
 {
     char c;
+    uint8_t src;
 
     while (Uart_TryReadChar(&c))
     {
+        src = uart_last_read_src;
         uart_last_rx_char_ms = now_ms;
 
         if (uart_rx_seen == 0U)
@@ -1337,18 +1713,28 @@ static void App_PollUart(uint32_t now_ms)
 
         if ((c == '\b') || ((uint8_t)c == 0x7FU))
         {
-            if (uart_line_len > 0U)
-            {
-                uart_line_len--;
-#if (APP_UART_ECHO != 0U)
-                Uart_Log("\b \b");
-#endif
-            }
+            /*
+             * Ignore backspace/delete control bytes.
+             * This prevents 1-char truncation when these bytes are injected
+             * by a secondary UART bridge or terminal.
+             */
             continue;
         }
 
         if (((uint8_t)c >= 32U) && ((uint8_t)c <= 126U))
         {
+            /*
+             * Keep each submitted line bound to a single UART source.
+             * This avoids mixed lines when both USARTs are connected.
+             */
+            if ((uart_line_src != 0U) && (src != 0U) && (src != uart_line_src))
+            {
+                continue;
+            }
+            if ((uart_line_src == 0U) && (src != 0U))
+            {
+                uart_line_src = src;
+            }
             if (uart_line_len < (APP_UART_LINE_MAX - 1U))
             {
                 uart_line[uart_line_len++] = c;
@@ -1379,6 +1765,7 @@ static void App_SubmitUartLine(uint32_t now_ms)
 #endif
     App_HandleUartLine(uart_line, now_ms);
     uart_line_len = 0U;
+    uart_line_src = 0U;
     Uart_Log("> ");
 }
 
@@ -1501,27 +1888,6 @@ static void Uart_Log(const char *msg)
     Uart_TransmitAll((const uint8_t *)msg, (uint16_t)strlen(msg));
 }
 
-static void Uart_LogText(const uint8_t *data, uint16_t size)
-{
-    uint16_t i;
-    uint8_t c;
-
-    if (data == NULL)
-    {
-        return;
-    }
-
-    for (i = 0U; i < size; i++)
-    {
-        c = data[i];
-        if ((c < 32U) || (c > 126U))
-        {
-            c = '.';
-        }
-        Uart_TransmitAll(&c, 1U);
-    }
-}
-
 static void Uart_Logf(const char *fmt, ...)
 {
     char buf[196];
@@ -1576,6 +1942,124 @@ static void Uart_LogTimedf(const char *fmt, ...)
     Uart_Log(line);
 }
 
+static void Uart_RingReset(app_uart_ring_t *ring)
+{
+    if (ring == NULL)
+    {
+        return;
+    }
+
+    ring->head = 0U;
+    ring->tail = 0U;
+    ring->overflow_count = 0U;
+}
+
+static void Uart_RingPush(app_uart_ring_t *ring, uint8_t value)
+{
+    uint16_t head;
+    uint16_t next;
+    uint16_t tail;
+
+    if (ring == NULL)
+    {
+        return;
+    }
+
+    head = ring->head;
+    tail = ring->tail;
+    next = (uint16_t)(head + 1U);
+    if (next >= APP_UART_RX_RING_SIZE)
+    {
+        next = 0U;
+    }
+
+    if (next == tail)
+    {
+        /* Drop oldest byte to keep newest command input. */
+        tail = (uint16_t)(tail + 1U);
+        if (tail >= APP_UART_RX_RING_SIZE)
+        {
+            tail = 0U;
+        }
+        ring->tail = tail;
+        ring->overflow_count++;
+    }
+
+    ring->data[head] = value;
+    ring->head = next;
+}
+
+static uint8_t Uart_RingPop(app_uart_ring_t *ring, char *out_char)
+{
+    uint16_t tail;
+    uint16_t head;
+
+    if ((ring == NULL) || (out_char == NULL))
+    {
+        return 0U;
+    }
+
+    tail = ring->tail;
+    head = ring->head;
+    if (tail == head)
+    {
+        return 0U;
+    }
+
+    *out_char = (char)ring->data[tail];
+    tail = (uint16_t)(tail + 1U);
+    if (tail >= APP_UART_RX_RING_SIZE)
+    {
+        tail = 0U;
+    }
+    ring->tail = tail;
+    return 1U;
+}
+
+static void Uart_IrqDrain(UART_HandleTypeDef *huart, app_uart_ring_t *ring)
+{
+    USART_TypeDef *uartx;
+    uint32_t isr;
+
+    if ((huart == NULL) || (ring == NULL) || (huart->Instance == NULL))
+    {
+        return;
+    }
+
+    uartx = huart->Instance;
+    isr = uartx->ISR;
+
+    if ((isr & (USART_ISR_ORE | USART_ISR_NE | USART_ISR_FE | USART_ISR_PE)) != 0U)
+    {
+        uartx->ICR = USART_ICR_ORECF | USART_ICR_NECF | USART_ICR_FECF | USART_ICR_PECF;
+    }
+
+#if defined(USART_ISR_RXNE_RXFNE)
+    while ((uartx->ISR & USART_ISR_RXNE_RXFNE) != 0U)
+#else
+    while ((uartx->ISR & USART_ISR_RXNE) != 0U)
+#endif
+    {
+        Uart_RingPush(ring, (uint8_t)(uartx->RDR & 0xFFU));
+    }
+}
+
+void USART1_IRQHandler(void)
+{
+    if (uart1_ready != 0U)
+    {
+        Uart_IrqDrain(&huart1, &uart1_rx_ring);
+    }
+}
+
+void USART2_IRQHandler(void)
+{
+    if (uart2_ready != 0U)
+    {
+        Uart_IrqDrain(&huart2, &uart2_rx_ring);
+    }
+}
+
 static void Uart_TransmitAll(const uint8_t *buf, uint16_t len)
 {
     if ((buf == NULL) || (len == 0U))
@@ -1627,26 +2111,55 @@ static uint8_t Uart_TryReadChar(char *out_char)
         return 0U;
     }
 
+    uart_last_read_src = 0U;
+
+#if (APP_CONSOLE_UART == 2U)
+    if (Uart_RingPop(&uart2_rx_ring, out_char) != 0U)
+    {
+        uart_last_read_src = 2U;
+        return 1U;
+    }
+    if (Uart_RingPop(&uart1_rx_ring, out_char) != 0U)
+    {
+        uart_last_read_src = 1U;
+        return 1U;
+    }
+#else
+    if (Uart_RingPop(&uart1_rx_ring, out_char) != 0U)
+    {
+        uart_last_read_src = 1U;
+        return 1U;
+    }
+    if (Uart_RingPop(&uart2_rx_ring, out_char) != 0U)
+    {
+        uart_last_read_src = 2U;
+        return 1U;
+    }
+#endif
+
     /*
-     * Robust non-blocking RX path:
-     * read directly from UART registers to avoid HAL state edge cases with timeout=0 polling.
+     * Safety fallback: direct register polling in case IRQ/RXNE config is not active yet.
      */
 #if (APP_CONSOLE_UART == 2U)
     if (Uart_TryReadFrom(&huart2, out_char) != 0U)
     {
+        uart_last_read_src = 2U;
         return 1U;
     }
     if (Uart_TryReadFrom(&huart1, out_char) != 0U)
     {
+        uart_last_read_src = 1U;
         return 1U;
     }
 #else
     if (Uart_TryReadFrom(&huart1, out_char) != 0U)
     {
+        uart_last_read_src = 1U;
         return 1U;
     }
     if (Uart_TryReadFrom(&huart2, out_char) != 0U)
     {
+        uart_last_read_src = 2U;
         return 1U;
     }
 #endif
@@ -1714,6 +2227,9 @@ static void MX_USART_UART_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+    Uart_RingReset(&uart1_rx_ring);
+    Uart_RingReset(&uart2_rx_ring);
+
     __HAL_RCC_USART2_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
@@ -1736,6 +2252,14 @@ static void MX_USART_UART_Init(void)
     huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
     if (HAL_UART_Init(&huart2) == HAL_OK)
     {
+        __HAL_UART_ENABLE_IT(&huart2, UART_IT_ERR);
+#if defined(USART_CR1_RXNEIE_RXFNEIE)
+        SET_BIT(huart2.Instance->CR1, USART_CR1_RXNEIE_RXFNEIE);
+#else
+        __HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
+#endif
+        HAL_NVIC_SetPriority(USART2_IRQn, 2, 0);
+        HAL_NVIC_EnableIRQ(USART2_IRQn);
         uart2_ready = 1U;
     }
 
@@ -1761,6 +2285,14 @@ static void MX_USART_UART_Init(void)
     huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
     if (HAL_UART_Init(&huart1) == HAL_OK)
     {
+        __HAL_UART_ENABLE_IT(&huart1, UART_IT_ERR);
+#if defined(USART_CR1_RXNEIE_RXFNEIE)
+        SET_BIT(huart1.Instance->CR1, USART_CR1_RXNEIE_RXFNEIE);
+#else
+        __HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
+#endif
+        HAL_NVIC_SetPriority(USART1_IRQn, 2, 0);
+        HAL_NVIC_EnableIRQ(USART1_IRQn);
         uart1_ready = 1U;
     }
 }
