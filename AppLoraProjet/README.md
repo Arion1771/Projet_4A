@@ -11,18 +11,28 @@ This is an Android application developed for the **LoRaSpéléo** project. It al
 ## Prerequisites
 - An Android device (API 24+) with Bluetooth.
 - A **LilyGO T-Beam** board (or similar) flashed with compatible firmware.
+- **Android SDK** installé sur votre machine.
 
 ## Getting Started
 1. **Clone the repository**:
    ```bash
    git clone <repository-url>
    ```
-2. **Open in Android Studio**:
+2. **Configuration du SDK (si nécessaire)** :
+   Le fichier `local.properties` est ignoré par Git car il contient des chemins spécifiques à votre machine. Si vous avez une erreur "SDK location not found" :
+   - **Option A (Recommandée)** : Définissez la variable d'environnement `ANDROID_HOME` pointant vers votre SDK Android.
+   - **Option B** : Créez un fichier `local.properties` à la racine du projet et ajoutez la ligne suivante (adaptez le chemin) :
+     ```text
+     sdk.dir=/votre/chemin/vers/Android/Sdk
+     ```
+   - **Option C** : Ouvrez simplement le projet avec Android Studio, il devrait détecter le SDK et créer le fichier automatiquement.
+
+3. **Open in Android Studio**:
    Launch Android Studio and select "Open an existing project", then choose the cloned folder.
-3. **Connect your device**:
+4. **Connect your device**:
    - Enable **Developer Options** and **USB Debugging** on your phone.
    - Connect your phone to your computer via USB.
-4. **Build and Run**:
+5. **Build and Run**:
    - Click the green **Run** button in Android Studio.
    - Grant the required Bluetooth and Location permissions on your phone.
 
