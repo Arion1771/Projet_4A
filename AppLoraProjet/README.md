@@ -1,6 +1,7 @@
 # LoRaSpéléo Android App
 
-This is an Android application developed for the **LoRaSpéléo** project. It allows communication with a **T-Beam** board via Bluetooth to send and receive messages through a LoRa network.
+## Description
+This is an Android application developed for the **LoRaSpéléo** project. It allows communication with a **classic T-Beam** board via Bluetooth to send and receive messages through a LoRa network.
 
 ## Features
 - **Real-time Chat**: Send and receive messages via LoRa.
@@ -10,19 +11,32 @@ This is an Android application developed for the **LoRaSpéléo** project. It al
 
 ## Prerequisites
 - An Android device (API 24+) with Bluetooth.
-- A **LilyGO T-Beam** board (or similar) flashed with compatible firmware.
+- A **LilyGO T-Beam** board (or similar) flashed with compatible firmware. (not implemented in the global project)
+- Android studio installed.
+- **Android SDK** installé sur votre machine.
 
 ## Getting Started
 1. **Clone the repository**:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/Arion1771/Projet_4A.git
    ```
-2. **Open in Android Studio**:
-   Launch Android Studio and select "Open an existing project", then choose the cloned folder.
-3. **Connect your device**:
-   - Enable **Developer Options** and **USB Debugging** on your phone.
-   - Connect your phone to your computer via USB.
-4. **Build and Run**:
+2. **Configuration du SDK (si nécessaire)** :
+   Le fichier `local.properties` est ignoré par Git car il contient des chemins spécifiques à votre machine. Si vous avez une erreur "SDK location not found" :
+   - **Option A (Recommandée)** : Définissez la variable d'environnement `ANDROID_HOME` pointant vers votre SDK Android.
+   - **Option B** : Créez un fichier `local.properties` à la racine du projet et ajoutez la ligne suivante (adaptez le chemin) :
+     ```text
+     sdk.dir=/votre/chemin/vers/Android/Sdk
+     ```
+   - **Option C** : Ouvrez simplement le projet avec Android Studio, il devrait détecter le SDK et créer le fichier automatiquement.
+
+3. **Open in Android Studio**:
+   Launch Android Studio and select "Open an existing project", then choose the "AppLoraProjet" folder.
+   you can launch it with to ways, using the emulator of android studio or using an android device plugged
+4. **(Optional, only if you want to launch it on your android device) Connect your device**:
+   - In the parameter of the device, click quickly seven timeson the "Build Number" to enable **Developer Options**.
+   - activate **USB Debugging** on your phone.
+   - Connect your phone to your computer via USB and allow files transfer and usb debugging
+5. **Build and Run**:
    - Click the green **Run** button in Android Studio.
    - Grant the required Bluetooth and Location permissions on your phone.
 
